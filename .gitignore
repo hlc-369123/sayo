@@ -1,0 +1,36 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# ---- 构建产物（安装包由构建脚本重新生成，不入库）----
+dist/
+build/
+*.spec.bak
+
+# ---- 离线模型（体积大，由 scripts/fetch_models.sh 获取，不入库）----
+models/sensevoice/*.onnx
+models/sensevoice/tokens.txt
+models/whisper/
+models/*.gguf
+*.gguf
+llm-models/
+
+# ---- 本地数据 / 日志（运行时生成于用户目录，不入库）----
+*.db
+*.db-journal
+*.tmp
+*.log
+logs/
+
+# ---- 系统 / 编辑器 ----
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# ---- WorkBuddy 项目内部数据（工具记忆/日志，不入库）----
+.workbuddy/

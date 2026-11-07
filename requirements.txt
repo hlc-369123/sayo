@@ -1,0 +1,8 @@
+# 运行时依赖（构建安装包时安装；目标机器无需自行安装）
+sherpa-onnx==1.13.8
+numpy>=1.26,<3
+sounddevice>=0.5.1
+PySide6-Essentials>=6.8,<7
+pynput>=1.7.7
+pyperclip>=1.9.0
+pypinyin>=0.53.0

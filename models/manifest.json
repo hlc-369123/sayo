@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "app": "静写 QuietType",
+  "note": "模型随安装包离线分发；目标机器运行时不需要下载任何文件。校验和用于安装后完整性自检。",
+  "source": {
+    "sensevoice": "k2-fsa/sherpa-onnx releases / hf-mirror csukuangfj 镜像（原模型 iic/SenseVoiceSmall，Apache-2.0）",
+    "silero_vad": "k2-fsa/sherpa-onnx releases/asr-models/silero_vad.onnx"
+  },
+  "files": {
+    "sensevoice/model.onnx": {
+      "sha256": "977016bd9c79f9eb343430b5cc305e07ab64d5212dff41b0dcfa1694bee9a8cb",
+      "bytes": 937617178,
+      "optional": true,
+      "role": "fp32 全精度主识别模型（默认）：轻声/长句/噪声下更稳，中英粤日韩自动语种、自带标点与 ITN；--lite 构建可不含，应用自动回退 int8"
+    },
+    "sensevoice/model.int8.onnx": {
+      "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
+      "bytes": 239233841,
+      "role": "int8 量化模型（极速/小体积档）：冷启动更快、内存更省，可在设置中切换"
+    },
+    "sensevoice/tokens.txt": {
+      "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
+      "bytes": 315894,
+      "role": "SenseVoice 词表"
+    },
+    "silero_vad.onnx": {
+      "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+      "bytes": 643854,
+      "role": "语音端点检测，剔除静音并切分长语音"
+    }
+  },
+  "optional": {
+    "whisper/encoder.onnx + decoder.onnx + tokens.txt": "可选 Whisper ONNX，用于 100+ 语种；构建时以 --with-whisper 下载，默认不打包"
+  },
+  "license": "sherpa-onnx Apache-2.0；SenseVoiceSmall Apache-2.0；Silero VAD MIT"
+}

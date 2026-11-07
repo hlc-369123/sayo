@@ -1,0 +1,4 @@
+# 可选：本地大模型支持（GGUF，llama.cpp，纯本机推理）
+# 仅在需要「深度改写 / 边说边翻译 / 就选中文字提问」时打包；会显著增大安装包。
+# macOS 可用 Metal: CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python
+llama-cpp-python>=0.3.0
