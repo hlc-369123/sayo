@@ -9,7 +9,7 @@ from PyInstaller.utils.hooks import collect_all
 ROOT = Path(os.path.abspath(SPECPATH)).parent
 IS_MAC = sys.platform == "darwin"
 IS_WIN = sys.platform == "win32"
-DEBUG_CONSOLE = os.environ.get("QUIETTYPE_DEBUG_CONSOLE", "0") == "1"
+DEBUG_CONSOLE = os.environ.get("SAYLO_DEBUG_CONSOLE", "0") == "1"
 
 ICON = ROOT / "assets" / ("icon.icns" if IS_MAC else "icon.ico" if IS_WIN else "icon.png")
 if not ICON.exists():
@@ -76,7 +76,7 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=None)
 exe = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
-    name="QuietType",
+    name="Saylo",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -92,18 +92,18 @@ exe = EXE(
 
 coll = COLLECT(
     exe, a.binaries, a.zipfiles, a.datas,
-    strip=False, upx=False, upx_exclude=[], name="QuietType",
+    strip=False, upx=False, upx_exclude=[], name="Saylo",
 )
 
 if IS_MAC:
     app = BUNDLE(
         coll,
-        name="静写 QuietType.app",
+        name="轻述 Saylo.app",
         icon=str(ICON),
-        bundle_identifier="local.quiettype.desktop",
+        bundle_identifier="local.saylo.desktop",
         info_plist={
-            "CFBundleName": "静写 QuietType",
-            "CFBundleDisplayName": "静写 QuietType",
+            "CFBundleName": "轻述 Saylo",
+            "CFBundleDisplayName": "轻述 Saylo",
             "CFBundleShortVersionString": "1.0.0",
             "CFBundleVersion": "1.0.0",
             "LSMinimumSystemVersion": "11.0",

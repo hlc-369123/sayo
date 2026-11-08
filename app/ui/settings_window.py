@@ -273,7 +273,7 @@ class SettingsWindow(QWidget):
         v.addWidget(self.table)
         row = QHBoxLayout()
         self.ed_term = QLineEdit()
-        self.ed_term.setPlaceholderText("标准写法，如：张伟 / QuietType")
+        self.ed_term.setPlaceholderText("标准写法，如：张伟 / Saylo")
         self.ed_alias = QLineEdit()
         self.ed_alias.setPlaceholderText("常见误识别，如：张卫,章伟")
         btn_add = QPushButton("添加 / 更新")

@@ -154,7 +154,7 @@ class _TextWindow(_FloatingWindow):
     """第一行：只有文字，用描边代替背景块，避免组成一个大面板。"""
 
     def __init__(self, theme: Theme):
-        super().__init__("QuietType Live Text", WIDTH, TEXT_HEIGHT)
+        super().__init__("Saylo Live Text", WIDTH, TEXT_HEIGHT)
         self.theme = theme
         self._text = ""
         self._status = ""
@@ -206,7 +206,7 @@ class _WaveWindow(_FloatingWindow):
     """第二行：只有曲线，无背景块。条数与振幅都由实时音量驱动。"""
 
     def __init__(self, theme: Theme):
-        super().__init__("QuietType Live Wave", WIDTH, WAVE_HEIGHT)
+        super().__init__("Saylo Live Wave", WIDTH, WAVE_HEIGHT)
         self.theme = theme
         self._level = 0.0
         self._bands = [0.0] * BAND_COUNT

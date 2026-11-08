@@ -140,11 +140,11 @@ def test_organize_injects_hotwords(monkeypatch):
 
     def fake_generate(system, user, max_tokens=512):
         seen["user"] = user
-        return "张伟负责 QuietType 项目。"
+        return "张伟负责 Saylo 项目。"
 
     monkeypatch.setattr(eng, "_generate", fake_generate)
-    eng.organize("张卫负责快type项目。", hotwords=["张伟", "QuietType"])
-    assert "专有名词表" in seen["user"] and "QuietType" in seen["user"]
+    eng.organize("张卫负责快type项目。", hotwords=["张伟", "Saylo"])
+    assert "专有名词表" in seen["user"] and "Saylo" in seen["user"]
 
 
 def test_organize_prompt_forbids_summarizing():

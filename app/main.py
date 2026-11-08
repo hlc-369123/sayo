@@ -1,4 +1,4 @@
-"""静写 QuietType 入口：全离线 AI 语音键盘（菜单栏常驻应用）。
+"""轻述 Saylo 入口：全离线 AI 语音键盘（菜单栏常驻应用）。
 
 用法：
     python -m app.main                 启动桌面应用
@@ -394,7 +394,7 @@ class Controller:
                 pass
             self.session.sig_error.emit(
                 "麦克风权限未授权：已为您弹出系统授权框并打开「隐私与安全性 → 麦克风」。"
-                "请勾选「静写 QuietType」的开关（若列表里有多个同名条目，先把旧的删掉），"
+                "请勾选「轻述 Saylo」的开关（若列表里有多个同名条目，先把旧的删掉），"
                 "然后回到输入框重新按 ⌘ + Shift + 空格 听写。")
             return
         # 其他原因：设备被占用 / 蓝牙断开 / 无输入设备
@@ -544,8 +544,11 @@ class AppSession:
 
 
 def run_gui(settings: Settings) -> int:
-    from PySide6.QtCore import Qt, QTimer
-    from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+    from PySide6.QtCore import QPointF, Qt, QTimer
+    from PySide6.QtGui import (
+        QAction, QBrush, QColor, QFont, QFontMetricsF, QIcon, QLinearGradient,
+        QPainter, QPen, QPixmap,
+    )
     from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
     from .ui.history_window import HistoryWindow
@@ -589,18 +592,26 @@ def run_gui(settings: Settings) -> int:
     session = AppSession(settings)
     ctrl = Controller(session)
 
-    # 图标：纯代码绘制，不依赖任何外部资源
+    # 图标：纯代码绘制，不依赖任何外部资源（品牌：蓝紫渐变圆角底 + 白色 S）
     pix = QPixmap(64, 64)
     pix.fill(Qt.transparent)
     p = QPainter(pix)
     p.setRenderHint(QPainter.Antialiasing)
-    p.setBrush(QColor("#1f2937"))
+    grad = QLinearGradient(0, 0, 64, 64)
+    grad.setColorAt(0.0, QColor("#4F8BFF"))
+    grad.setColorAt(1.0, QColor("#8B6BFF"))
+    p.setBrush(grad)
     p.setPen(Qt.NoPen)
-    p.drawRoundedRect(4, 4, 56, 56, 14, 14)
-    p.setBrush(QColor("#ef4444"))
-    p.drawEllipse(24, 14, 16, 36)
-    p.setBrush(QColor("#60a5fa"))
-    p.drawEllipse(16, 22, 10, 20)
+    p.drawRoundedRect(2, 2, 60, 60, 15, 15)
+    f = QFont("Avenir Next")
+    f.setPixelSize(40)
+    f.setWeight(QFont.Bold)
+    p.setFont(f)
+    p.setPen(QColor("#FFFFFF"))
+    fm = QFontMetricsF(f)
+    br = fm.tightBoundingRect("S")
+    p.drawText(QPointF((64 - br.width()) / 2.0 - br.left(),
+                       (64 - br.height()) / 2.0 - br.top()), "S")
     p.end()
 
     overlay = RecordingOverlay(settings.get("theme", DEFAULT_THEME))

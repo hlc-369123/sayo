@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # 离线安装：从 U 盘 / 内网介质把 .app 装到本机 /Applications，全程不联网。
-# 用法： bash install_offline_macos.sh "/Volumes/USB/静写 QuietType.app" [--launch]
+# 用法： bash install_offline_macos.sh "/Volumes/USB/轻述 Saylo.app" [--launch]
 #   --launch = 装完后跑一次离线自检并启动应用，方便立即试用
 set -euo pipefail
-SRC="${1:-./静写 QuietType.app}"
+SRC="${1:-./轻述 Saylo.app}"
 LAUNCH="${2:-}"
-DEST="/Applications/静写 QuietType.app"
+DEST="/Applications/轻述 Saylo.app"
 
 if [[ ! -d "$SRC" ]]; then echo "找不到应用：$SRC" >&2; exit 1; fi
 echo "安装到：$DEST"
@@ -33,8 +33,8 @@ codesign --force --deep --sign - "$DEST" 2>/dev/null || true
 
 # 清掉历史安装留下的旧「辅助功能」条目（每次构建签名都变，旧条目与新二进制不匹配，
 # 会出现「开关明明开着却始终未授权」的假象）。失败不影响安装，只提示手动清理。
-if ! tccutil reset Accessibility local.quiettype.desktop >/dev/null 2>&1; then
-  echo "提示：未能自动清理旧授权条目。若 系统设置 → 辅助功能 里有多条「静写 QuietType」，"
+if ! tccutil reset Accessibility local.saylo.desktop >/dev/null 2>&1; then
+  echo "提示：未能自动清理旧授权条目。若 系统设置 → 辅助功能 里有多条「轻述 Saylo」，"
   echo "      请把旧条目选中按 − 删除，再用 ➕ 添加 \"$DEST\" 并打开开关。"
 fi
 
@@ -43,10 +43,10 @@ echo "首次启动只需授予：麦克风（录音）、辅助功能（自动�
 echo "  未授予辅助功能时文字仍会写入剪贴板；设置 → 权限与隐私 可一键申请"
 
 if [[ "$LAUNCH" == "--launch" ]]; then
-  EXE="$DEST/Contents/MacOS/QuietType"
+  EXE="$DEST/Contents/MacOS/Saylo"
   if [[ -x "$EXE" ]]; then
     echo "=== 安装后离线自检 ==="
-    QUIETTYPE_DATA="${QUIETTYPE_DATA:-$HOME/Library/Application Support/QuietType}" "$EXE" --self-check || true
+    SAYLO_DATA="${SAYLO_DATA:-$HOME/Library/Application Support/Saylo}" "$EXE" --self-check || true
     echo "=== 本机推理基准（CPU/GPU × fp32/int8） ==="
     "$EXE" --benchmark || true
     echo "=== 启动应用 ==="
