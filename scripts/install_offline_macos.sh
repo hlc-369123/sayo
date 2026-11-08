@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 离线安装：从 U 盘 / 内网介质把 .app 装到本机 /Applications，全程不联网。
+# 从 U 盘 / 下载目录把 .app 装到本机 /Applications，安装过程不联网。
+# 模型不随包：首次使用前需运行 scripts/install_models.command 联网下载一次。
 # 用法： bash install_offline_macos.sh "/Volumes/USB/轻述 sayo.app" [--launch]
 #   --launch = 装完后跑一次离线自检并启动应用，方便立即试用
 set -euo pipefail
@@ -53,5 +54,6 @@ if [[ "$LAUNCH" == "--launch" ]]; then
     open "$DEST"
   fi
 else
-  echo "安装完成。可通过 open \"$DEST\" 启动，无账号、无激活、无联网检查。"
+  echo "安装完成。首次使用前请先运行一次 scripts/install_models.command 下载模型（仅这一步联网）。"
+  echo "之后可 open \"$DEST\" 启动：无账号、无激活、运行时完全离线、无联网检查。"
 fi

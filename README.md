@@ -8,7 +8,7 @@
 
 > 在任意应用里按一下快捷键就说话，语音**立刻**变成「能直接发出去的文字」并写入光标处。
 > **完全离线**：音频采集、语音识别、文本润色、本地大模型、历史存储**全部在本机完成**，
-> 不登录、不激活、不联网、不更新检查、不遥测、无任何出站网络请求。
+> 不登录、不激活、运行时不联网、不更新检查、不遥测、无任何出站网络请求（模型首次下载见下）。
 
 ---
 
@@ -62,7 +62,10 @@
 
 ## 离线承诺（务必先读）
 
-- 模型、推理库、Qt、PortAudio **全部随安装包分发**。目标机器安装后**不需要下载任何文件**。
+- **应用本体完全离线**：推理库、Qt、PortAudio 随安装包分发；**语音模型不随包**，
+  首次使用前运行一次 `scripts/install_models.command` 联网下载到用户目录
+  （默认 int8 约 240 MB；`--full` 加 fp32 约 940 MB）。下载完成后应用运行期间**零网络请求**。
+- 模型下载由**独立脚本**在应用之外完成，脚本成功后不会再被应用调用；应用自身的离线锁不受影响。
 - 运行时没有任何 `requests / urllib / http / openai` 等调用；启动时安装**进程级离线锁**，
   禁止一切 `AF_INET/AF_INET6` 连接（只放行本机 `AF_UNIX` 进程间通信）。
 - 可用两种方式复核：`python -m app.main --self-check` 与 `python scripts/verify_offline.py`
@@ -89,7 +92,7 @@
 | --- | --- | --- |
 | CPU | 4 核（支持 SSE4.2/AVX 或 ARM NEON） | Apple M1 / i5 8 代 / Ryzen 3000+ |
 | 内存 | 2.5 GiB 可用 | 4 GiB+ |
-| 磁盘 | 2 GB 可用（完整包） | 3 GB（启用本地 LLM 额外 2–4 GB） |
+| 磁盘 | 应用约 200 MB + 模型 240 MB（int8 档） | 完整档模型 +0.9 GB；启用本地 LLM 再 +2–4 GB |
 | 麦克风 | 任意内置 / USB / 蓝牙，16 kHz 单声道 | 近讲降噪麦 |
 
 **不需要** GPU / 独显 / NPU：SenseVoice 是小模型，本机实测 CPU 上即可实时；GPU 仅提供额外算力，
@@ -97,8 +100,9 @@
 
 ### 目标机器运行时依赖
 
-**什么都不需要**：不需要 Python、pip、Node、Docker、.NET、Java、任何模型下载、任何账号、任何联网。
-所有运行时（含 Python 解释器、推理库、Qt）都随 `.app` / EXE 一起打包。
+**运行时什么都不需要**：不需要 Python、pip、Node、Docker、.NET、Java、账号或联网。
+Python 解释器、推理库、Qt 都随 `.app` / EXE 打包。
+**唯一一次例外**：首次使用前需联网下载语音模型（见下一节「第 0 步」），之后永久离线。
 
 ---
 
@@ -109,10 +113,10 @@
 你拿到的是 `轻述 sayo.app` / `轻述 sayo-1.0.0-macos.zip` / `sayo-1.0.0-macos.dmg` / `sayo-1.0.0-macos.pkg`
 （或 Windows 的 ZIP / EXE、Linux 的 tar.gz）。**直接用，不需要开发环境。**
 
-> **GitHub 仓库只存源码**：`.app`、DMG、ZIP 等二进制产物在 `.gitignore` 中被忽略，不进仓库
-> （完整安装包约 1 GB，其中离线语音模型约 1.1 GB，超过 GitHub 单文件 100 MB 限制）。
+> **GitHub 仓库只存源码**：`.app`、DMG、ZIP 等二进制产物在 `.gitignore` 中被忽略，不进仓库。
 > 官方安装包发布在 **Releases** 页面：<https://github.com/hlc-369123/sayo/releases>。
-> 下载 zip 后双击解压，把「轻述 sayo」拖进「应用程序」即可；校验值见同名 `.sha256` 文件。
+> 安装包**不含模型**，压缩后约 200 MB；下载 zip 后双击解压，把「轻述 sayo」拖进「应用程序」，
+> 校验值见同名 `.sha256` 文件。模型单独下载，见下面「第 0 步」。
 
 - **macOS**
   - DMG：双击挂载 → 把「轻述 sayo」拖进「应用程序」。
@@ -123,7 +127,17 @@
 - **Windows**：解压 ZIP 到任意目录双击 `sayo.exe`；或运行 Inno Setup 生成的 `setup.exe`。
 - **Linux**：`tar -xzf sayo-*.tar.gz && ./sayo/sayo`，无需 root。
 
-> 安装包里**已含语音模型**，所以装完即可用，不用再下载。
+#### 第 0 步：下载语音模型（仅第一次，需联网）
+
+双击 Release 附带的 `install_models.command`（或仓库里的 `scripts/install_models.command`），
+它会把 int8 模型、词表、VAD 下载到 `~/Library/Application Support/sayo/models/` 并逐个校验 SHA-256，
+约 240 MB。想要 fp32 全精度：`./install_models.command --full`（再下约 940 MB）。
+
+- 下载脚本是独立进程，**应用本身永不联网**；完成后可断网长期使用。
+- 模型放在用户目录，覆盖安装 / 升级应用不会丢，也不用往只读的 `.app` 里写文件。
+- 下载源可用 `HF_MIRROR` / `GH_MIRROR` 环境变量替换；支持断点续传，重复运行自动跳过已校验文件。
+- 完全气密的断网机器：在有网机器上跑一次脚本，把 `~/Library/Application Support/sayo/models/`
+  整个目录拷到目标机器同名路径即可。
 
 ### B. 拿到「源码」（开发者 / 想自己改的人）
 
@@ -234,7 +248,8 @@ Windows / Linux 的权限差异见 [使用手册](#文档索引)。
 
 - **源码运行**：需要 Python 3.10–3.12（推荐 3.11）、PySide6、sherpa-onnx、PySide 依赖；
   先 `bash scripts/fetch_models.sh` 拉模型，再 `python -m app.main`。
-- **重新打包**：`bash scripts/fetch_models.sh` → `bash scripts/build_macos.sh`（或对应平台脚本）→ 产物在 `dist/`。
+- **重新打包**：`bash scripts/build_macos.sh`（或对应平台脚本）→ 产物在 `dist/`，**模型不会打进包内**。
+  （只有从源码运行才需要先 `bash scripts/fetch_models.sh` 把模型放到仓库 `models/`。）
 - **怎么改**：热键、灵敏度默认值、主题、浮层行为、ASR 模型、本地 LLM、词典、UI 各在什么文件改，见 [开发指南](#文档索引)。
 - **测试**：`python -m pytest -q tests`；离线验收 `python scripts/verify_offline.py`。
 
@@ -251,9 +266,9 @@ app/                  应用源码（config / core / platform / ui）
   core/               recorder/audio_gate/asr/accel/live/postprocess/dictionary/pipeline/storage/llm/offline
   platform/           hotkey/permissions/inject/context/focus（本机系统适配）
   ui/                 overlay/settings_window/history_window/summary_window/quickstart/permission_guide/themes
-models/               随包模型（fetch_models.sh 下载 + manifest.json 校验和）
+models/               开发用模型（不随包；fetch_models.sh 下载 + manifest.json 校验和）
 assets/               图标、内置语音样本
-scripts/              fetch_models / build_* / install_offline_macos / verify_offline / make_icon
+scripts/              install_models.command（用户首次下载模型）/ fetch_models / build_* / install_offline_macos / verify_offline / make_icon / push_github
 packaging/            PyInstaller spec、Inno Setup 脚本
 tests/                单元测试与语音样本（约 90+ 项）
 ```
@@ -267,7 +282,8 @@ tests/                单元测试与语音样本（约 90+ 项）
   Silero VAD（MIT）、PySide6/Qt（LGPL/GPL，商业使用请遵循 Qt 条款）、
   PortAudio / pynput / pyperclip / pypinyin（各自开源许可）。
 - **隐私**：无任何数据离开本机。所有历史、设置、可选录音仅存于用户目录，可手动导出 / 清空。
-- 上游模型下载地址**只出现在构建脚本中**（构建机用），**运行时代码不引用任何外部地址**。
+- 上游模型下载地址**只出现在下载脚本中**（`scripts/fetch_models.sh` / `scripts/install_models.command`），
+  **运行时代码不引用任何外部地址**。
 
 ---
 

@@ -905,7 +905,10 @@ def run_gui(settings: Settings) -> int:
     # ------------------------------------------------------------ 启动检查
     ok, msg = ctrl.asr.check_models()
     if not ok:
-        tray.showMessage(APP_NAME, "模型文件缺失：" + msg, QSystemTrayIcon.Critical, 8000)
+        tray.showMessage(
+            APP_NAME,
+            "模型未安装：" + msg + "\n首次使用请运行 scripts/install_models.command 下载（仅这一步需联网）",
+            QSystemTrayIcon.Critical, 10000)
     else:
         def _warmup_all():
             try:

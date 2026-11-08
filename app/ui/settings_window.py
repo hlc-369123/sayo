@@ -551,8 +551,10 @@ class SettingsWindow(QWidget):
         from ..core.llm import LocalTextEngine
 
         add_row("版本", f"{APP_NAME} v{APP_VERSION}")
-        add_row("运行方式", "完全离线 · 无账号 · 无更新检查 · 无遥测")
-        self.lb_models = add_row("模型状态", "模型完整 ✓" if ok else "模型缺失 ✗  " + msg)
+        add_row("运行方式", "运行时完全离线 · 模型首次需联网下载一次 · 无账号 · 无更新检查 · 无遥测")
+        self.lb_models = add_row(
+            "模型状态", "模型完整 ✓" if ok else
+            "模型缺失 ✗  请运行 scripts/install_models.command 下载（仅这一步需联网）\n" + msg)
         self.lb_model_dir = add_row("模型目录", str(models_dir()))
         add_row("推理配置", accel.capability_summary(self.settings.data))
         add_row("实时浮层",

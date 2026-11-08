@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 仅在【构建机】上执行：下载随包分发的离线模型。
-# 目标机器（最终用户电脑）永远不需要运行本脚本，也不需要联网。
+# 【构建机 / 开发者】把模型下载到仓库 models/，用于本地开发或从源码运行。
+# 安装包不再内含模型；最终用户请改用 scripts/install_models.command（下载到用户数据目录）。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -70,4 +70,4 @@ fi
 
 echo ">>> 校验"
 python3 "$ROOT/scripts/verify_offline.py" --check-models
-echo "完成。现在可以执行 build_macos.sh / build_windows.ps1 / build_linux.sh 打离线安装包。"
+echo "完成。模型只用于本地开发 / 源码运行；安装包不含模型，无需把它们打进 .app。"

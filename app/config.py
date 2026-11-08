@@ -22,10 +22,11 @@ def is_frozen() -> bool:
 
 
 def resource_root() -> Path:
-    """安装包内的只读资源根目录（模型、图标、内置词表）。
+    """安装包内的只读资源根目录（图标、内置词表）。
 
     PyInstaller 在不同平台/不同打包模式下把数据放到不同位置，
-    这里逐一探测，保证开发态与三种平台安装包都能找到 models/。
+    这里以 assets/ 为锚点逐一探测（模型已不再随包，不能再用 models/ 当锚点），
+    保证开发态与三种平台安装包都能找到资源。
     """
     if is_frozen():
         exe = Path(sys.executable).resolve()
@@ -38,16 +39,33 @@ def resource_root() -> Path:
             exe.parent,
         ]
         for c in candidates:
-            if (c / "models").is_dir():
+            if (c / "assets").is_dir():
                 return c
         return base
     return Path(__file__).resolve().parent.parent
 
 
+def user_models_dir() -> Path:
+    """外部模型目录：语音模型不随安装包分发，首次使用时下载到这里。
+
+    路径与用户数据目录同根（macOS: ~/Library/Application Support/sayo/models），
+    覆盖安装不会丢模型，也无需往只读的 .app 里写文件。
+    """
+    return user_data_dir() / "models"
+
+
 def models_dir() -> Path:
+    """当前生效的模型目录，优先级：SAYO_MODELS > 外部模型目录 > 包内目录。
+
+    包内目录只用于兼容开发态（源码仓库里的 models/）和旧版随包安装，
+    新版安装包里不存在该目录。
+    """
     override = os.environ.get("SAYO_MODELS")
     if override:
         return Path(override).expanduser()
+    external = user_models_dir()
+    if (external / "sensevoice").is_dir() or (external / "silero_vad.onnx").is_file():
+        return external
     return resource_root() / "models"
 
 

@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 打包规格：onedir + 模型随包，生成可离线安装的独立应用。"""
+"""PyInstaller 打包规格：onedir。语音模型不随包，首次使用时联网下载一次。"""
 import os
 import sys
 from pathlib import Path
@@ -15,9 +15,10 @@ ICON = ROOT / "assets" / ("icon.icns" if IS_MAC else "icon.ico" if IS_WIN else "
 if not ICON.exists():
     ICON = ROOT / "assets" / "icon.png"
 
-# 模型、图标、manifest 全部随包；目标机器运行时不读取任何外部文件
+# 图标、内置词表随包。语音模型体积 0.24–1.1 GB，不随安装包分发：
+# 由 scripts/install_models.command 在首次使用时下载到用户数据目录的 models/。
+# 应用运行时仍然完全离线（离线锁禁止一切 IP 连接），下载只由这个独立脚本完成。
 datas = [
-    (str(ROOT / "models"), "models"),
     (str(ROOT / "assets"), "assets"),
 ]
 binaries = []

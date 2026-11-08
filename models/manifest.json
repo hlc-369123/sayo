@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "app": "轻述 sayo",
-  "note": "模型随安装包离线分发；目标机器运行时不需要下载任何文件。校验和用于安装后完整性自检。",
+  "note": "模型不随安装包分发，由 scripts/install_models.command 首次下载到用户数据目录；应用运行时完全离线。校验和用于下载后完整性自检。",
   "source": {
     "sensevoice": "k2-fsa/sherpa-onnx releases / hf-mirror csukuangfj 镜像（原模型 iic/SenseVoiceSmall，Apache-2.0）",
     "silero_vad": "k2-fsa/sherpa-onnx releases/asr-models/silero_vad.onnx"
