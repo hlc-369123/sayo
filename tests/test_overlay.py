@@ -220,3 +220,38 @@ def test_classic_shows_live_text_even_with_legacy_preview_flag_off(app):
     o.set_state("transcribing", "本地识别与润色中…")
     assert o.text_window._text == ""          # 结束后屏幕不留字
     o.set_state("idle")
+
+
+def test_pill_resize_zone_shows_hint_tooltip(app):
+    """回归：鼠标悬停胶囊右缘拉伸区，应给出「可拖动调宽」提示，否则外人不知道点这里能干嘛。"""
+    o = RecordingOverlay(overlay_style="pill")
+    pill = o.pill_window
+    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtGui import QMouseEvent
+
+    w = pill._w
+    ev = QMouseEvent(QEvent.MouseMove, QPointF(w - 2, 20), QPointF(w - 2, 20),
+                     Qt.NoButton, Qt.NoButton, Qt.NoModifier)
+    pill.mouseMoveEvent(ev)
+    tip = pill.toolTip()
+    assert "缩短" in tip and "拉长" in tip, tip
+
+    ev2 = QMouseEvent(QEvent.MouseMove, QPointF(40, 20), QPointF(40, 20),
+                      Qt.NoButton, Qt.NoButton, Qt.NoModifier)
+    pill.mouseMoveEvent(ev2)
+    assert "移动" in pill.toolTip(), pill.toolTip()
+
+    assert "取消" in pill._btn_cancel.toolTip()
+    assert "写入" in pill._btn_confirm.toolTip()
+    o.set_state("idle")
+
+
+def test_pill_resize_reapplies_native_nonactivating(app):
+    """回归：拉长时立刻重建非激活原生属性，避免 frame 重建把面板变普通窗口、切走用户界面。"""
+    o = RecordingOverlay(overlay_style="pill")
+    pill = o.pill_window
+    before = pill._w
+    pill.resize_to(before + 120)             # 触发 resize_to -> apply_native 重设非激活
+    assert pill._w == before + 120
+    assert pill.width() == before + 120
+    o.set_state("idle")

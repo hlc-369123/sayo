@@ -476,6 +476,8 @@ class _PillWindow(_FloatingWindow):
         self._btn_confirm = _PillButton(self, "confirm")
         self._btn_cancel.clicked.connect(self.cancel_requested)
         self._btn_confirm.clicked.connect(self.confirm_requested)
+        self._btn_cancel.setToolTip("取消：丢弃本次识别内容")
+        self._btn_confirm.setToolTip("确认：把识别文字写入当前输入框")
         self._relayout()
 
     # ---------------------------------------------------------- 布局
@@ -515,6 +517,10 @@ class _PillWindow(_FloatingWindow):
             return
         self._w = w
         self._relayout()
+        # 改宽会重建窗口 frame，macOS 可能借此把「非激活风格位」清掉，
+        # 导致拖拽拉长时浮层突然变成普通窗口、把界面切回本应用（回到桌面）。
+        # 立刻重新套用原生属性，确保整个拉长过程浮层始终保持非激活。
+        self.apply_native()
 
     # ---------------------------------------------------------- 拖动 / 拉伸
     @property
@@ -551,6 +557,10 @@ class _PillWindow(_FloatingWindow):
             return
         self.setCursor(Qt.SizeHorCursor if self._in_resize_zone(event.position().x())
                        else Qt.OpenHandCursor)
+        if self._in_resize_zone(event.position().x()):
+            self.setToolTip("拖动右边缘调整胶囊宽度：向左缩短 · 向右拉长")
+        else:
+            self.setToolTip("拖动可移动浮层位置；点 × 取消，点 ✓ 写入输入框")
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):  # noqa: N802
