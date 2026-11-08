@@ -71,6 +71,8 @@ if [ "${1:-}" = "--probe-only" ]; then
 fi
 
 echo "──────── 3/4 设置远程并推送 ────────"
+# 避免首次连接被 known_hosts 交互提示卡住（"Host key verification failed" 也会报成没有权限）
+export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o ServerAliveInterval=20"
 git remote set-url origin "$CHANNEL"
 echo "远程已设为: $CHANNEL"
 
