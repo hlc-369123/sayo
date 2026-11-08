@@ -6,9 +6,13 @@
 # 只想诊断、不推送：
 #     bash scripts/push_github.sh --probe-only
 #
-# 注意：GitHub 对 `ssh -T git@github.com` 永远返回非零退出码，
-# 并把 "You've successfully authenticated" 当作**成功消息**打印。
-# 不能用 ssh -T 的退出码判断权限，必须用真实 git 协议（ls-remote）判断。
+# 两个已踩过的坑：
+#  1. GitHub 对 `ssh -T git@github.com` 永远返回非零，并把
+#     "You've successfully authenticated" 当作【成功消息】打印。
+#     不能用它判断权限；git 的 "Please make sure you have the correct
+#     access rights" 也只是连接中断时的兜底文案，同样不代表密钥失效。
+#  2. 代理可能在 pack 传到一半时掐断（unexpected disconnect while
+#     reading sideband packet）。整包推送失败时自动改为按提交分批推送。
 set -u
 
 cd "$(dirname "$0")/.." || { echo "找不到项目目录"; exit 1; }
@@ -16,6 +20,10 @@ cd "$(dirname "$0")/.." || { echo "找不到项目目录"; exit 1; }
 SSH22="git@github.com:hlc-369123/sayo.git"
 SSH443="ssh://git@ssh.github.com:443/hlc-369123/sayo.git"
 HTTPS_URL="https://github.com/hlc-369123/sayo.git"
+
+COMMITS_FILE="$(mktemp -t sayo-commits)"
+PUSH_ERR="$(mktemp -t sayo-push-err)"
+trap 'rm -f "$COMMITS_FILE" "$PUSH_ERR"' EXIT
 
 echo "──────── 1/4 本机与仓库信息 ────────"
 git --version
@@ -29,10 +37,10 @@ else
   echo "公钥指纹 : 未找到 ~/.ssh/id_ed25519.pub"
 fi
 
-# 长一点的连接超时 + 保活，避免代理偶发掐断被误判成「认证失败」
-export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+# 长连接超时 + 保活 + SSH 层压缩，减小被代理掐断的概率
+export GIT_SSH_COMMAND="ssh -C -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6"
 
-# 用真实 git 协议探测：空仓库返回 0 且无输出；认证/连接失败返回非 0
+# 真实 git 协议探测：空仓库返回 0 且无输出；连接失败返回非 0
 probe() {
   local url="$1" out rc
   out="$(git ls-remote "$url" 2>&1)"
@@ -41,35 +49,93 @@ probe() {
     echo "OK  $url"
     return 0
   fi
-  echo "--  $url 不通（rc=$rc），原始报错："
-  printf '%s\n' "$out" | head -8 | sed 's/^/    /'
+  echo "--  $url 这次没通（rc=$rc）："
+  printf '%s\n' "$out" | head -5 | sed 's/^/    /'
   return 1
 }
 
-echo "──────── 2/4 探测可用通道（每条最多 2 次，代理偶发掐断会自动重试） ────────"
-CHANNEL=""
+echo "──────── 2/4 探测通道（仅用于选路，探测不通也照样尝试推送） ────────"
+CHANNEL="$SSH22"
 for url in "$SSH22" "$SSH443"; do
   for attempt in 1 2; do
     if probe "$url"; then
       CHANNEL="$url"
       break 2
     fi
-    [ "$attempt" -lt 2 ] && echo "   第 $attempt 次未通，稍后重试…"
+    [ "$attempt" -lt 2 ] && echo "   第 $attempt 次未通，重试…"
   done
 done
+# 两条探测都不通也不放弃：仍以 22 为准做一次真实 push，由真实结果说话
+echo "选定通道: $CHANNEL"
 
-if [ -z "$CHANNEL" ]; then
+if [ "${1:-}" = "--probe-only" ]; then
+  echo "诊断完成（未推送）"
+  exit 0
+fi
+
+# 整包推送失败时，按提交顺序逐个 fast-forward，把一次大上传拆成多次小上传。
+# 天然幂等：已在远程历史里的提交会被跳过，中途断了重跑可从断点继续。
+chunked_push() {
+  local remote_head c ok a label
+  remote_head="$(git ls-remote --heads origin main 2>/dev/null | awk '{print $1}')"
+  git rev-list --reverse main > "$COMMITS_FILE"
+  while read -r c; do
+    if [ -n "$remote_head" ] && git merge-base --is-ancestor "$c" "$remote_head" 2>/dev/null; then
+      continue
+    fi
+    ok=0
+    for a in 1 2 3; do
+      if git push --quiet origin "${c}:refs/heads/main" 2>"$PUSH_ERR"; then
+        ok=1
+        break
+      fi
+    done
+    label="$(git show -s --format='%h %s' "$c" | cut -c1-56)"
+    if [ "$ok" = 1 ]; then
+      echo "  OK   $label"
+      remote_head="$c"
+    else
+      echo "  FAIL $label"
+      head -4 "$PUSH_ERR" | sed 's/^/       /'
+      return 1
+    fi
+  done < "$COMMITS_FILE"
+  return 0
+}
+
+echo "──────── 3/4 推送 ────────"
+git remote set-url origin "$CHANNEL"
+echo "远程已设为: $CHANNEL"
+
+PUSHED=0
+for a in 1 2 3; do
+  echo "── 整包推送尝试 $a/3 ──"
+  if git push -u origin main; then
+    PUSHED=1
+    break
+  fi
+done
+
+if [ "$PUSHED" = 0 ]; then
+  echo ""
+  echo "整包推送未成功，改用分批推送（把仓库拆成逐次小上传）…"
+  if chunked_push; then
+    git push -u --quiet origin main || true
+    PUSHED=1
+  fi
+fi
+
+if [ "$PUSHED" = 0 ]; then
   echo ""
   echo "── 补充判断：SSH 认证本身是否正常 ──"
   auth="$(ssh -o BatchMode=yes -o ConnectTimeout=15 -T git@github.com 2>&1)"
   printf '%s\n' "$auth" | head -4 | sed 's/^/    /'
   if printf '%s' "$auth" | grep -q "successfully authenticated"; then
-    echo "   ↑ 这行是【认证成功】，GitHub 不提供 shell 属正常现象。"
-    echo "   说明密钥没问题，是代理/网络在 git 数据阶段掐断了连接。"
-    echo "   建议：关闭代理或 VPN、换手机热点后重跑本脚本。"
+    echo "   ↑ 这是【认证成功】，密钥和账号都没问题，是网络在传数据时掐断了连接。"
+    echo "   建议：关闭代理 / VPN，或换手机热点后重跑本脚本（会从未完成的提交继续）。"
   fi
   echo ""
-  echo "❌ 两条 SSH 通道都不可用。兜底方案：HTTPS + Personal Access Token"
+  echo "❌ 仍未推上去。兜底方案：HTTPS + Personal Access Token"
   echo "   1) 浏览器打开 https://github.com/settings/tokens/new"
   echo "      选 classic token，勾选 repo，生成后复制（只显示一次）"
   echo "   2) 终端执行："
@@ -80,31 +146,12 @@ if [ -z "$CHANNEL" ]; then
   echo "      # 用户名填 hlc-369123，密码粘贴刚才的 token"
   echo "      git push --tags"
   echo ""
-  echo "把上面所有「原始报错」一起发回来，可以进一步定位。"
-  exit 1
-fi
-
-if [ "${1:-}" = "--probe-only" ]; then
-  echo "诊断完成，可用通道：$CHANNEL（未推送）"
-  exit 0
-fi
-
-echo "──────── 3/4 设置远程并推送 ────────"
-git remote set-url origin "$CHANNEL"
-echo "远程已设为: $CHANNEL"
-
-if ! git push -u origin main; then
-  echo ""
-  echo "❌ 代码推送失败（原始报错见上）。通道探测是通的，多为上传阶段被网络掐断，可重试："
-  echo "      git push -u origin main"
-  echo "   若反复失败，关闭代理 / 换网络后重跑：bash scripts/push_github.sh"
-  echo "   应急：dist/sayo-full.bundle 是完整仓库备份，可直接传给对方 clone。"
+  echo "把完整输出贴回来，可以进一步定位。"
   exit 1
 fi
 
 if ! git push --tags; then
   echo "⚠️ 代码已推送成功，标签推送失败，稍后重试: git push --tags"
-  exit 1
 fi
 
 echo "──────── 4/4 完成 ────────"
