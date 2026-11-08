@@ -435,18 +435,16 @@ class Controller:
         self.session.sig_mode.emit(mode)
         # 浮层显示后把前台交还原应用；用户点回输入框不会中断录音
         self.session.sig_command.emit("restore_front")
-        # 胶囊样式中间那块就是实时识别文字区，必须始终启动增量解码；
-        # live_preview 开关只决定「经典两窗」是否显示，不该让胶囊变空。
-        need_live = (bool(self.settings.get("live_preview", True))
-                     or self.settings.get("overlay_style", "pill") == "pill")
-        if need_live:
-            try:
-                self.live.interval = max(0.05, min(0.5,
-                    float(self.settings.get("live_interval_ms", 550)) / 1000.0))
-                self.live.start(self.recorder.snapshot)
-            except Exception as exc:
-                log_note(f"实时预览启动失败：{type(exc).__name__}: {exc}")
-                # 预览失败不影响正式识别；结束时仍会显示最终识别文字
+        # 两种浮层样式都要显示实时识别文字（胶囊中间 / 经典上窗），
+        # 所以增量解码始终启动。旧 live_preview 开关会连带关掉引擎，
+        # 导致经典模式一片空白，已废弃。
+        try:
+            self.live.interval = max(0.05, min(0.5,
+                float(self.settings.get("live_interval_ms", 550)) / 1000.0))
+            self.live.start(self.recorder.snapshot)
+        except Exception as exc:
+            log_note(f"实时预览启动失败：{type(exc).__name__}: {exc}")
+            # 预览失败不影响正式识别；结果仍会写入输入框
 
     def stop(self):
         if self.state != "recording":
@@ -752,7 +750,6 @@ def run_gui(settings: Settings) -> int:
         ctrl.live.interval = max(0.05, min(0.5,
             float(settings.get("live_interval_ms", 550)) / 1000.0))
         apply_app_theme()
-        overlay.set_live_preview(bool(settings.get("live_preview", True)))
         overlay.apply_theme(settings.get("theme", DEFAULT_THEME))
         overlay.apply_style(settings.get("overlay_style", "classic"))
         set_sound_enabled(bool(settings.get("interaction_sound", True)))

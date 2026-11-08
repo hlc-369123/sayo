@@ -120,13 +120,14 @@ DEFAULT_SETTINGS: dict = {
     "agc_target_peak": 0.90,  # high 档
     "max_record_seconds": 300,
     # ---- 实时浮层与输出 ----
-    "live_preview": True,  # 录音时两个独立置顶窗口：实时文字 + 声音曲线
+    # live_preview 已废弃：实时识别文字在胶囊 / 经典两种样式下始终显示。
+    # 旧开关会连带关掉增量解码引擎，正是「经典模式一片空白」的根因。
     "live_interval_ms": 450,  # 每约 0.45s 重解码当前句，后续语音会修正前面已显示的字
     "smart_output": True,  # 有输入框焦点才粘贴；无焦点只写剪贴板
     "smart_output_when_unknown": "paste",  # 焦点无法判断时：paste（默认，保证「说了就出字」）/ clipboard（保守，只复制需手动 ⌘V）
     "first_run_done": False,  # 首次启动弹出「怎么用」引导
     "theme": "aurora",  # 内置主题 key，见 app/ui/themes.py THEMES（默认极光：文字+曲线无底板）
-    "overlay_style": "pill",  # 浮层样式：pill（单条胶囊，简洁风，默认）/ classic（原样式，文字/曲线两窗）
+    "overlay_style": "pill",  # 浮层样式：pill（单条胶囊，默认）/ classic（文字/曲线两窗）
     "pill_pos": None,  # 胶囊浮层上次拖动的位置 [x, y]；None = 启动时居中
     "pill_width": 360,  # 胶囊宽度（拖拽右边缘可调，拉长显示更多识别文字）
     "overlay_default_migrated": False,  # 一次性迁移标记：旧 classic 默认已升级为 pill
@@ -229,7 +230,7 @@ class Settings:
             self._data["overlay_style"] = DEFAULT_SETTINGS["overlay_style"]
             self.save()
         # 兼容历史脏值：旧版 _save() 曾把下拉显示文案存进 overlay_style
-        # （如「胶囊（单条椭圆，简洁风）」），导致启动时 RecordingOverlay
+        # （如「胶囊（单条椭圆）」），导致启动时 RecordingOverlay
         # 匹配不到 "pill" 而回退经典两窗。加载时统一规范化为机器值。
         _style_val = str(self._data.get("overlay_style", "pill"))
         if _style_val not in ("classic", "pill"):

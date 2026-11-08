@@ -177,3 +177,46 @@ def test_pill_is_nonactivating_and_notifies_host(app):
     assert hasattr(o.pill_window._btn_confirm.parent(), "interaction_started")
     assert hasattr(o.pill_window._btn_cancel.parent(), "interaction_started")
     o.set_state("idle")
+
+
+def test_style_switch_after_done_never_pops_an_empty_overlay(app):
+    """回归：结束听写后切样式，不许凭空弹出空胶囊 / 一根静止曲线。
+
+    旧实现把 _state 停在 done，_apply_style_visibility() 看到「非 idle」
+    就主动 show 目标样式，用户切一下下拉框屏幕上就多出一个没有声音的哑浮层。
+    """
+    o = RecordingOverlay(overlay_style="classic")
+    o.set_state("recording", "正在聆听…")
+    o.set_live_text("今天下午三点开会")
+    o.set_state("done", "已写入输入框")
+    assert o._state == "idle"                  # 非录音状态归一，避免残留 done
+    assert o.text_window._text == ""
+    assert o.wave_window._visible is False
+
+    o.apply_style("pill")
+    assert o.pill_window._visible is False
+    assert o.wave_window._visible is False
+    assert o.text_window._text == ""
+
+    o.apply_style("classic")
+    assert o.wave_window._visible is False
+    assert o.pill_window._visible is False
+    assert o.text_window._text == ""
+
+
+def test_classic_shows_live_text_even_with_legacy_preview_flag_off(app):
+    """回归：旧配置 live_preview=False 曾让经典模式一片空白。
+
+    该开关既关掉增量解码引擎、又清空经典文字窗口；现在实时文字在两种
+    样式下始终开启，历史配置里的 False 不应再有任何影响。
+    """
+    s = _FakeSettings({"live_preview": False})
+    o = RecordingOverlay(overlay_style="classic", settings=s)
+    o.set_state("recording", "正在聆听…")
+    assert o.text_window._text == "正在聆听…"
+    assert o.wave_window._visible is True
+    o.set_live_text("把会议改到明天上午")
+    assert o.text_window._text == "把会议改到明天上午"
+    o.set_state("transcribing", "本地识别与润色中…")
+    assert o.text_window._text == ""          # 结束后屏幕不留字
+    o.set_state("idle")

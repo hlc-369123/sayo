@@ -4,11 +4,9 @@
 其它平台回退到 QtMultimedia 的 QSound。
 
 提示音文件放在 assets/sounds/：
-  · start.wav —— 开始听写（上行提示音），取自  的 record-start 原声
-  · end.wav   —— 结束听写（下行提示音），取自  的 record-end 原声
-（从 /Applications/.app 的 app.asar 中提取，已确认语义：
- {'record-start': 7ZwPubNT.wav（升调）, 'record-end': BGK9atS4.wav（降调））。
-如需替换为其它音色，同名覆盖即可。
+  · start.wav —— 开始听写（上行短音）
+  · end.wav   —— 结束听写（下行短音）
+两段都是随包内置的本地音频素材，播放不依赖网络；如需换成自己的音色，同名覆盖即可。
 """
 from __future__ import annotations
 

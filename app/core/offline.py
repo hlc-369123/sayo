@@ -63,9 +63,10 @@ def audit_source(root: str) -> list[str]:
     """静态审计：列出源码中出现的联网关键字（应为空）。仅用于构建期自检。"""
     import re
     from pathlib import Path
+    # 只列通用联网特征与库名，不引用任何第三方产品 / 品牌名称
     pattern = re.compile(
         r"(requests\.(get|post)|urllib\.request|http\.client|httpx|aiohttp|"
-        r"socket\.create_connection|openai|anthropic|api\.|telemetry|analytics)",
+        r"socket\.create_connection|https?://|telemetry|analytics)",
         re.I,
     )
     hits: list[str] = []

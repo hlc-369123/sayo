@@ -796,9 +796,8 @@ class RecordingOverlay(QObject):
         self.theme = get_theme(theme_key)
         self._style = overlay_style
         self._settings = settings
-        # live_preview 只控制经典两窗是否显示；关闭时经典窗口也不许残留描边大字
-        self._live_preview = (bool(settings.get("live_preview", True))
-                              if settings is not None else True)
+        # 实时识别文字在两种样式下都必须显示（胶囊中间 / 经典上窗）。
+        # 旧 live_preview 开关会连带关掉增量解码引擎，让经典模式一片空白，已废弃。
         # 跨重启记忆胶囊位置与宽度
         self._pill_pos = None
         width = PILL_W
@@ -857,33 +856,31 @@ class RecordingOverlay(QObject):
         self._sync_text()  # 切换样式后立刻按新样式重刷文字，避免旧的描边大字残留
 
     def set_live_preview(self, enabled: bool) -> None:
-        """设置里开关「经典两窗」后立即生效，不残留描边大字。"""
-        self._live_preview = bool(enabled)
+        """已废弃：实时文字在两种样式下始终开启，保留仅为兼容旧调用。"""
         self._sync_text()
 
     def _apply_style_visibility(self) -> None:
-        """依据当前样式开启对应分组、并清空另一组的可见内容。
+        """依据当前样式开启对应分组，清空另一组内容；绝不主动弹出窗口。
 
-        若正在听写/识别/完成（非 idle），同时把目标样式的窗口显示出来，
-        保证「设置里中途切换样式」时当前会话不会突然失去浮层。
+        三个窗口从启动就常驻显示，靠「内容为空 / _visible=False」在视觉上隐藏。
+        旧实现只要 _state != idle 就 show 目标样式，而结束听写后 _state 会停在
+        done / transcribing，于是用户在设置里切一下样式，屏幕上就凭空多出一个
+        空胶囊或一根静止曲线（没有声音、也不消失）。这里只在真正录音中保持显示。
         """
+        active = self._state == "recording"
         if self._style == "pill":
             # 经典两窗：清空内容（透明+穿透，视觉上消失）
             self.text_window.set_content("", "", False)
             self.wave_window.set_visible(False)
-            # 胶囊：仅当正在录音（浮层可见）时才可点击；否则整体穿透
-            self.pill_window.set_interactive(self._state != "idle")
-            if self._state != "idle":
-                self.pill_window.set_visible(True)
-                self.pill_window.show_overlay()
+            # 胶囊：仅当正在录音时才可见/可点击；否则整体穿透
+            self.pill_window.set_interactive(active)
+            self.pill_window.set_visible(active)
         else:
             # 胶囊：彻底隐藏且点击穿透，避免透明空胶囊抢点击
             self.pill_window.set_visible(False)
             self.pill_window.set_interactive(False)
-            if self._state != "idle":
-                self.wave_window.set_visible(True)
-                self.text_window.show_overlay()
-                self.wave_window.show_overlay()
+            # 曲线随录音显隐；文字窗口的内容由 _sync_text() 统一写入
+            self.wave_window.set_visible(active)
 
     # ------------------------------------------------------------ 位置
     def _target_screen(self):
@@ -970,6 +967,9 @@ class RecordingOverlay(QObject):
             self.text_window.set_content("", "", False)
             self.pill_window.set_visible(False)
             self.pill_window.set_interactive(False)
+            # 归一为 idle：transcribing / done 都不显示任何东西。否则之后在设置里
+            # 切换样式时，apply_style 会误以为「会话仍在进行」而把浮层弹出来。
+            self._state = "idle"
         self._sync_text()
 
     def _sync_text(self) -> None:
@@ -983,13 +983,11 @@ class RecordingOverlay(QObject):
             # 胶囊中间只放实时识别文字；状态文案一律不显示
             self.pill_window.set_content(self._live_text, "", is_live)
         else:
-            if self._live_preview:
-                self.text_window.set_content(self._live_text or self._status,
-                                             self._status, is_live)
-            else:
-                # 用户关掉了「经典两窗」：常驻窗口必须清空，否则状态文案
-                # 仍会以描边大字浮在屏幕顶部。
-                self.text_window.set_content("", "", False)
+            # 经典模式：录音时上窗显示实时识别文字（未出字时显示状态），
+            # 结束后由 set_state() 清空，屏幕上不留字。不再受已废弃的
+            # live_preview 开关影响，避免「说了话却什么都不显示」。
+            self.text_window.set_content(self._live_text or self._status,
+                                         self._status, is_live)
             self.pill_window.set_content("", "", False)
         self.pill_window.set_state(self._state)
 

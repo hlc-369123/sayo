@@ -142,10 +142,6 @@ class SettingsWindow(QWidget):
         self.ck_login.setChecked(bool(s["launch_at_login"]))
         self.ck_smart = QCheckBox("智能输出：有输入框才粘贴，没有输入框只放进剪贴板")
         self.ck_smart.setChecked(bool(s.get("smart_output", True)))
-        self.ck_live = QCheckBox("经典样式：录音时显示文字 / 声音曲线两窗")
-        self.ck_live.setChecked(bool(s.get("live_preview", True)))
-        self.ck_live.setToolTip(
-            "只影响「经典（两窗）」样式。胶囊样式中间始终显示实时识别文字，不受此项影响")
         self.cb_unknown = QComboBox()
         self.cb_unknown.addItems(["clipboard", "paste"])
         self.cb_unknown.setCurrentText(s.get("smart_output_when_unknown", "clipboard"))
@@ -175,7 +171,6 @@ class SettingsWindow(QWidget):
         f.addRow(self.ck_login)
         f.addRow(self.ck_smart)
         f.addRow("焦点无法判断时", self.cb_unknown)
-        f.addRow(self.ck_live)
         f.addRow("界面主题", self.cb_theme)
         # 浮层样式：下拉用 data 存机器值（classic/pill），显示文案与值分离。
         # 旧 bug：_save() 曾用 currentText() 把中文文案存进配置，启动时
@@ -193,8 +188,9 @@ class SettingsWindow(QWidget):
             idx = 1  # 未知历史值按默认胶囊处理
         self.cb_overlay_style.setCurrentIndex(idx)
         self.cb_overlay_style.setToolTip(
-            "胶囊：左 × / logo / 文字 / 分隔 / 麦克风 / 波形 / 右 ✓ 都在一个椭圆框内，"
-            "× 取消（丢弃），✓ 确认（提交）。切换立即生效，无需保存")
+            "胶囊：左 × 取消 / 中间实时识别文字 / 音量波形 / 右 ✓ 确认，"
+            "都在一条椭圆框内，配色跟随主题，可拖动、拖右边缘调宽。"
+            "经典：上方实时文字 + 下方声音曲线两窗。切换立即生效，无需保存")
         self.cb_overlay_style.currentIndexChanged.connect(self._apply_overlay_style)
         f.addRow("浮层样式", self.cb_overlay_style)
         self.ck_sound = QCheckBox("交互声音：开始 / 结束听写的提示音")
@@ -688,7 +684,6 @@ class SettingsWindow(QWidget):
             "launch_at_login": self.ck_login.isChecked(),
             "smart_output": self.ck_smart.isChecked(),
             "smart_output_when_unknown": self.cb_unknown.currentText(),
-            "live_preview": self.ck_live.isChecked(),
             "overlay_style": self.cb_overlay_style.currentData() or "pill",
             "interaction_sound": self.ck_sound.isChecked(),
             "mute_others_during_input": self.ck_mute_others.isChecked(),
