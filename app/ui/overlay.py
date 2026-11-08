@@ -17,8 +17,8 @@ import sys
 import time
 
 from PySide6.QtCore import Qt, QTimer, Signal, QRect, QRectF, QPointF, QObject
-from PySide6.QtGui import (QColor, QCursor, QFont, QLinearGradient, QBrush,
-                           QPainter, QPainterPath, QPen)
+from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetrics, QLinearGradient,
+                           QBrush, QPainter, QPainterPath, QPen)
 from PySide6.QtWidgets import QApplication, QWidget
 
 from .themes import DEFAULT_THEME, Theme, get_theme
@@ -36,6 +36,7 @@ PILL_H = 40
 PILL_BTN_R = 9
 PILL_BANDS = 12
 PILL_RESIZE_ZONE = 16  # 右边缘拉伸热区宽度（鼠标移上去变左右箭头）
+TIP_H = 30              # 窗口顶部预留的透明带高度，专门绘制悬停提示气泡
 NOISE_FLOOR = 0.16     # 波形底噪门限：静音时归 0，波形静止
 
 
@@ -467,6 +468,11 @@ class _PillWindow(_FloatingWindow):
         self._visible = False
         self._drag_offset = None   # 非 None = 正在拖动整条
         self._resize_start = None  # (起点全局 x, 起始宽度) = 正在拉伸
+        # 悬停提示气泡状态（macOS 非激活面板原生 tooltip 不可靠，改为自绘）
+        self._oy = TIP_H
+        self._tip_text = ""
+        self._tip_rect = None
+        self._tip_x = width / 2.0
         self.setMouseTracking(True)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -476,23 +482,26 @@ class _PillWindow(_FloatingWindow):
         self._btn_confirm = _PillButton(self, "confirm")
         self._btn_cancel.clicked.connect(self.cancel_requested)
         self._btn_confirm.clicked.connect(self.confirm_requested)
-        self._btn_cancel.setToolTip("取消：丢弃本次识别内容")
-        self._btn_confirm.setToolTip("确认：把识别文字写入当前输入框")
+        # 注：macOS 非激活浮层的原生 tooltip 不可靠，按钮含义由自绘提示气泡统一给出
         self._relayout()
 
     # ---------------------------------------------------------- 布局
     def _relayout(self) -> None:
-        """按当前宽度重排所有元素。按钮圆心 = 胶囊两端半圆圆心，保证同心。"""
-        cy = PILL_H / 2.0
+        """按当前宽度重排所有元素。按钮圆心 = 胶囊两端半圆圆心，保证同心。
+
+        胶囊整体绘制下移 TIP_H：窗口上方留出一条透明带，专门画悬停提示气泡。
+        """
+        cy_local = PILL_H / 2.0
         d = PILL_BTN_R
         # 胶囊两端是半径 PILL_H/2 的半圆，圆心分别落在这两个点上
-        self._cx_cancel = cy
-        self._cx_confirm = self._w - cy
-        self._cy = cy
+        self._cx_cancel = cy_local
+        self._cx_confirm = self._w - cy_local
+        self._cy = cy_local           # 绘制用的局部圆心（paintEvent 会整体下移 TIP_H）
         self._btn_r = d
-        self._cancel_rect = QRect(round(self._cx_cancel - d), round(cy - d),
+        cy_widget = TIP_H + cy_local  # 真实按钮控件在窗口坐标系里的 y
+        self._cancel_rect = QRect(round(self._cx_cancel - d), round(cy_widget - d),
                                   2 * d, 2 * d)
-        self._confirm_rect = QRect(round(self._cx_confirm - d), round(cy - d),
+        self._confirm_rect = QRect(round(self._cx_confirm - d), round(cy_widget - d),
                                    2 * d, 2 * d)
         self._btn_cancel.setGeometry(self._cancel_rect)
         self._btn_confirm.setGeometry(self._confirm_rect)
@@ -507,7 +516,7 @@ class _PillWindow(_FloatingWindow):
             self._wave_left += 36 - (self._text_right - self._text_left)
             self._sep_x = self._wave_left - 8
             self._text_right = self._sep_x - 6
-        self.setFixedSize(self._w, PILL_H)
+        self.setFixedSize(self._w, TIP_H + PILL_H)
         self.update()
 
     def resize_to(self, width: int) -> None:
@@ -535,6 +544,7 @@ class _PillWindow(_FloatingWindow):
         if event.button() == Qt.LeftButton:
             # 拖动/拉伸绝不能把用户正在输入的应用切到后台
             self.interaction_started.emit()
+            self._clear_tip()  # 拖拽/拉伸期间不显示提示气泡
             if self._in_resize_zone(event.position().x()):
                 self._resize_start = (event.globalPosition().toPoint().x(), self._w)
             else:
@@ -555,13 +565,62 @@ class _PillWindow(_FloatingWindow):
             self.move(event.globalPosition().toPoint() - self._drag_offset)
             event.accept()
             return
-        self.setCursor(Qt.SizeHorCursor if self._in_resize_zone(event.position().x())
+        x = event.position().x()
+        self.setCursor(Qt.SizeHorCursor if self._in_resize_zone(x)
                        else Qt.OpenHandCursor)
-        if self._in_resize_zone(event.position().x()):
-            self.setToolTip("拖动右边缘调整胶囊宽度：向左缩短 · 向右拉长")
+        if self._in_resize_zone(x):
+            self._set_tip("拖动右边缘：向左缩短 · 向右拉长", x)
         else:
-            self.setToolTip("拖动可移动浮层位置；点 × 取消，点 ✓ 写入输入框")
+            self._set_tip("拖动可移动位置 · 点 × 取消 · 点 ✓ 写入", x)
         super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):  # noqa: N802
+        self._clear_tip()
+        super().leaveEvent(event)
+
+    # ---------------------------------------------------------- 悬停提示气泡
+    def _set_tip(self, text: str, x: float) -> None:
+        text = (text or "").strip()
+        if text == self._tip_text:
+            self._tip_x = x
+            return
+        self._tip_text = text
+        self._tip_x = x
+        self._tip_rect = self._compute_tip_rect(text, x) if text else None
+        self.update()
+
+    def _clear_tip(self) -> None:
+        if self._tip_text or self._tip_rect is not None:
+            self._tip_text = ""
+            self._tip_rect = None
+            self.update()
+
+    def _compute_tip_rect(self, text: str, x: float):
+        f = QFont()
+        f.setPointSize(11)
+        fm = QFontMetrics(f)
+        tw = fm.horizontalAdvance(text)
+        bw = tw + 18
+        bh = TIP_H - 8
+        bx = max(2.0, min(self._w - bw - 2.0, x - bw / 2.0))
+        return QRectF(bx, 4.0, bw, bh)
+
+    def _draw_tip(self, p: QPainter) -> None:
+        t = self.theme
+        c_panel = QColor(t.ui_panel)
+        c_border = QColor(t.ui_border)
+        c_fg = QColor(t.ui_fg)
+        r = self._tip_rect
+        rr = r.height() / 2.0
+        p.setBrush(QBrush(_with_alpha(c_panel, 240)))
+        p.setPen(QPen(c_border, 1))
+        p.drawRoundedRect(r, rr, rr)
+        f = QFont()
+        f.setPointSize(11)
+        p.setFont(f)
+        p.setPen(c_fg)
+        p.setBrush(Qt.NoBrush)
+        p.drawText(r, Qt.AlignCenter, self._tip_text)
 
     def mouseReleaseEvent(self, event):  # noqa: N802
         if self._resize_start is not None:
@@ -687,6 +746,10 @@ class _PillWindow(_FloatingWindow):
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        # 悬停提示气泡画在窗口顶部预留的透明带上（不随胶囊下移）
+        if self._tip_text and self._tip_rect is not None:
+            self._draw_tip(p)
+        p.translate(0, self._oy)
         w = self._w
         t = self.theme
 

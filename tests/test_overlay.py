@@ -223,26 +223,35 @@ def test_classic_shows_live_text_even_with_legacy_preview_flag_off(app):
 
 
 def test_pill_resize_zone_shows_hint_tooltip(app):
-    """回归：鼠标悬停胶囊右缘拉伸区，应给出「可拖动调宽」提示，否则外人不知道点这里能干嘛。"""
-    o = RecordingOverlay(overlay_style="pill")
-    pill = o.pill_window
+    """回归：鼠标悬停胶囊右缘拉伸区，应给出「可拖动调宽」自绘提示气泡。
+
+    macOS 非激活浮层的原生 tooltip 不可靠，改在窗口内自绘提示气泡
+    （_tip_text / _tip_rect），必须断言自绘字段而非原生 toolTip()。
+    """
     from PySide6.QtCore import QEvent, QPointF
     from PySide6.QtGui import QMouseEvent
 
+    o = RecordingOverlay(overlay_style="pill")
+    pill = o.pill_window
     w = pill._w
+
     ev = QMouseEvent(QEvent.MouseMove, QPointF(w - 2, 20), QPointF(w - 2, 20),
                      Qt.NoButton, Qt.NoButton, Qt.NoModifier)
     pill.mouseMoveEvent(ev)
-    tip = pill.toolTip()
-    assert "缩短" in tip and "拉长" in tip, tip
+    assert "缩短" in pill._tip_text and "拉长" in pill._tip_text, pill._tip_text
+    # 提示气泡位于窗口顶部预留透明带内（y 在 0..TIP_H）
+    assert pill._tip_rect is not None
+    assert 0 <= pill._tip_rect.y() < pill._tip_rect.height() + 4
 
     ev2 = QMouseEvent(QEvent.MouseMove, QPointF(40, 20), QPointF(40, 20),
                       Qt.NoButton, Qt.NoButton, Qt.NoModifier)
     pill.mouseMoveEvent(ev2)
-    assert "移动" in pill.toolTip(), pill.toolTip()
+    assert "移动" in pill._tip_text, pill._tip_text
+    assert "取消" in pill._tip_text and "写入" in pill._tip_text
 
-    assert "取消" in pill._btn_cancel.toolTip()
-    assert "写入" in pill._btn_confirm.toolTip()
+    # 移开鼠标（leaveEvent）应清空提示气泡
+    pill.leaveEvent(QEvent(QEvent.Leave))
+    assert pill._tip_text == "" and pill._tip_rect is None
     o.set_state("idle")
 
 
