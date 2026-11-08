@@ -255,6 +255,36 @@ def test_pill_resize_zone_shows_hint_tooltip(app):
     o.set_state("idle")
 
 
+def test_pill_proximity_shows_tip_without_overlapping(app, monkeypatch):
+    """回归：鼠标只需靠近胶囊四周 PILL_PROX 范围即显示提示，不必精确压在窗口上。
+
+    模拟光标在窗口右侧外 12px（< PILL_PROX=26）应给出拉伸提示；
+    在窗口上方外 10px 应给出通用提示；远离（> PILL_PROX）应清空。
+    """
+    from PySide6.QtCore import QPoint, QRect
+
+    o = RecordingOverlay(overlay_style="pill")
+    pill = o.pill_window
+    pill._visible = True
+    pill._w = 360
+    rect = QRect(100, 100, 360, 70)
+    monkeypatch.setattr(pill, "frameGeometry", lambda: rect)
+
+    # 右侧外 12px —— 落在右缘拉伸区
+    pill._update_proximity(QPoint(100 + 360 + 12, 135))
+    assert "缩短" in pill._tip_text and "拉长" in pill._tip_text, pill._tip_text
+
+    # 上方外 10px —— 中间区域通用提示
+    pill._update_proximity(QPoint(250, 100 - 10))
+    assert "移动" in pill._tip_text, pill._tip_text
+    assert "取消" in pill._tip_text and "写入" in pill._tip_text
+
+    # 远离（> PILL_PROX=26）—— 必须清空
+    pill._update_proximity(QPoint(900, 900))
+    assert pill._tip_text == "" and pill._tip_rect is None
+    o.set_state("idle")
+
+
 def test_pill_resize_reapplies_native_nonactivating(app):
     """回归：拉长时立刻重建非激活原生属性，避免 frame 重建把面板变普通窗口、切走用户界面。"""
     o = RecordingOverlay(overlay_style="pill")

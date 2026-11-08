@@ -36,6 +36,7 @@ PILL_H = 40
 PILL_BTN_R = 9
 PILL_BANDS = 12
 PILL_RESIZE_ZONE = 16  # 右边缘拉伸热区宽度（鼠标移上去变左右箭头）
+PILL_PROX = 26          # 鼠标进入窗口四周此像素范围内即显示提示，提高靠近灵敏度
 TIP_H = 30              # 窗口顶部预留的透明带高度，专门绘制悬停提示气泡
 NOISE_FLOOR = 0.16     # 波形底噪门限：静音时归 0，波形静止
 
@@ -578,6 +579,30 @@ class _PillWindow(_FloatingWindow):
         self._clear_tip()
         super().leaveEvent(event)
 
+    # ---------------------------------------------------------- 靠近检测（提高灵敏度）
+    def _update_proximity(self, gp=None) -> None:
+        """轮询全局鼠标位置：只要光标进入胶囊四周 PILL_PROX 范围内就显示提示，
+        不必精确压在窗口上。每帧由 _tick 调用（仅在可见且未拖拽时生效）。"""
+        if not self._visible or self.is_dragging:
+            return
+        if gp is None:
+            gp = QCursor.pos()
+        gr = self.frameGeometry()           # 全局坐标
+        near = QRect(gr.x() - PILL_PROX, gr.y() - PILL_PROX,
+                     gr.width() + 2 * PILL_PROX, gr.height() + 2 * PILL_PROX)
+        if not near.contains(gp):
+            if self._tip_text:
+                self._clear_tip()
+            return
+        local_x = gp.x() - gr.x()
+        # 右缘拉伸区：窗口右侧 PILL_RESIZE_ZONE 之内，或外延 PROX 内且靠右
+        in_resize = local_x >= self._w - PILL_RESIZE_ZONE - PILL_PROX * 0.5
+        x_anchor = max(2.0, min(self._w - 2.0, local_x))
+        if in_resize:
+            self._set_tip("拖动右边缘：向左缩短 · 向右拉长", x_anchor)
+        else:
+            self._set_tip("拖动可移动位置 · 点 × 取消 · 点 ✓ 写入", x_anchor)
+
     # ---------------------------------------------------------- 悬停提示气泡
     def _set_tip(self, text: str, x: float) -> None:
         text = (text or "").strip()
@@ -701,6 +726,7 @@ class _PillWindow(_FloatingWindow):
     def _tick(self) -> None:
         if not self._visible:
             return
+        self._update_proximity()   # 鼠标靠近窗口四周即提示，无需精确压在窗口上
         self._phase += 1
         self._bands = [v * 0.90 for v in self._bands]
         self._level *= 0.93
