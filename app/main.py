@@ -456,6 +456,18 @@ class Controller:
         mode, ctx = self.mode, self.context
         self.executor.submit(self._work, audio, mode, ctx, seconds, audio_path)
 
+    def cancel(self):
+        """取消本次听写：停止录音并丢弃音频，不识别、不写入。"""
+        if self.state != "recording":
+            return
+        self.live.stop()  # 结束增量解码
+        try:
+            self.recorder.stop()
+        except Exception:
+            pass
+        self.state = "idle"
+        self.session.sig_state.emit("idle", "")
+
     def toggle(self):
         if self.state == "idle":
             self.begin()
@@ -555,6 +567,7 @@ def run_gui(settings: Settings) -> int:
     from .ui.settings_window import SettingsWindow
     from .ui.summary_window import SummaryWindow
     from .ui.themes import DEFAULT_THEME, get_theme, ui_stylesheet
+    from .core.sound import set_enabled as set_sound_enabled, play_start, play_end
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
@@ -598,9 +611,15 @@ def run_gui(settings: Settings) -> int:
     else:
         pix = pix.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
-    overlay = RecordingOverlay(settings.get("theme", DEFAULT_THEME))
+    overlay = RecordingOverlay(settings.get("theme", DEFAULT_THEME),
+                               settings.get("overlay_style", "classic"))
     # 浮层完全鼠标穿透：点击它所在的区域会直达下面的输入框，
     # 不再把「点回输入框」误判成「结束听写」。
+    # 胶囊样式的 ×/✓：× 取消（丢弃本次听写），✓ 确认（提交识别结果）
+    overlay.cancel_requested.connect(lambda: ctrl.cancel())
+    overlay.confirm_requested.connect(lambda: ctrl.stop())
+    # 初始化交互声音开关（来自「设置 → 常规 → 交互声音」）
+    set_sound_enabled(bool(settings.get("interaction_sound", True)))
     settings_win = SettingsWindow(settings, ctrl.storage, ctrl.pipeline)
     history_win = HistoryWindow(ctrl.storage, ctrl.pipeline)
 
@@ -700,6 +719,8 @@ def run_gui(settings: Settings) -> int:
             float(settings.get("live_interval_ms", 550)) / 1000.0))
         apply_app_theme()
         overlay.apply_theme(settings.get("theme", DEFAULT_THEME))
+        overlay.apply_style(settings.get("overlay_style", "classic"))
+        set_sound_enabled(bool(settings.get("interaction_sound", True)))
         rebuild_hotkeys("设置保存后重建系统热键")
         new_sig = asr_signature(settings.data)
         if new_sig == prev_sig[0]:
@@ -760,8 +781,16 @@ def run_gui(settings: Settings) -> int:
             ctrl.shutdown()
             app.quit()
 
+    _prev_state = ["idle"]
+
     def on_state(state, text):
         overlay.set_state(state, text)
+        # 交互声音：进入 recording 播放开始音，离开 recording 播放结束音
+        if state == "recording" and _prev_state[0] != "recording":
+            play_start()
+        elif _prev_state[0] == "recording" and state != "recording":
+            play_end()
+        _prev_state[0] = state
 
     def on_result(result):
         # 最终文字一定显示：即使实时预览引擎没吐字，也能看到这次识别的结果

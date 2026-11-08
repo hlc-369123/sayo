@@ -5,7 +5,8 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
-    QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QSizePolicy, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
+    QVBoxLayout, QWidget,
 )
 
 from ..config import (
@@ -117,6 +118,18 @@ class SettingsWindow(QWidget):
         f.addRow("焦点无法判断时", self.cb_unknown)
         f.addRow("", self.ck_live)
         f.addRow("界面主题", self.cb_theme)
+        self.cb_overlay_style = QComboBox()
+        self.cb_overlay_style.addItems(["classic", "pill"])
+        self.cb_overlay_style.setItemText(0, "经典（文字 / 曲线两窗，原样式）")
+        self.cb_overlay_style.setItemText(1, "胶囊（单条椭圆，简洁风）")
+        self.cb_overlay_style.setCurrentText(s.get("overlay_style", "classic"))
+        self.cb_overlay_style.setToolTip(
+            "胶囊：左 × / logo / 文字 / 分隔 / 麦克风 / 波形 / 右 ✓ 都在一个椭圆框内，"
+            "× 取消（丢弃），✓ 确认（提交）")
+        f.addRow("浮层样式", self.cb_overlay_style)
+        self.ck_sound = QCheckBox("交互声音：开始 / 结束听写的提示音（ 原声）")
+        self.ck_sound.setChecked(bool(s.get("interaction_sound", True)))
+        f.addRow("", self.ck_sound)
         self.tabs.addTab(w, "常规")
 
     def _preview_theme(self):
@@ -149,6 +162,9 @@ class SettingsWindow(QWidget):
         self.ck_recheck.setChecked(bool(s.get("gpu_recheck", True)))
         self.lb_accel = QLabel("\n".join(accel.status_lines()))
         self.lb_accel.setWordWrap(True)
+        # 多行说明：约束宽度并允许纵向扩展，避免 QFormLayout 行高计算不足导致「字叠字」
+        self.lb_accel.setMinimumWidth(400)
+        self.lb_accel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
         self.sp_threads = QSpinBox()
         self.sp_threads.setRange(0, 16)
         self.sp_threads.setValue(int(s["num_threads"]))
@@ -324,15 +340,23 @@ class SettingsWindow(QWidget):
         w, f = self._form()
         engine = ASREngine(models_dir(), self.settings.data)
         ok, msg = engine.check_models()
-        self.lb_models = QLabel(("模型完整 ✓  " if ok else "模型缺失 ✗  " + msg) +
-                               "\n模型目录：" + str(models_dir()))
+        self.lb_models = QLabel("模型完整 ✓" if ok else "模型缺失 ✗  " + msg)
         self.lb_models.setWordWrap(True)
+        self.lb_models.setMinimumWidth(400)
+        self.lb_models.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
+        self.lb_model_dir = QLabel(str(models_dir()))
+        self.lb_model_dir.setWordWrap(True)
+        self.lb_model_dir.setMinimumWidth(400)
+        self.lb_model_dir.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
         from ..core.llm import LocalTextEngine
         self.lb_llm = QLabel(LocalTextEngine(self.settings.data).status())
         self.lb_llm.setWordWrap(True)
+        self.lb_llm.setMinimumWidth(400)
+        self.lb_llm.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
         f.addRow("版本", QLabel(f"{APP_NAME} v{APP_VERSION}"))
         f.addRow("运行方式", QLabel("完全离线 · 无账号 · 无更新检查 · 无遥测"))
         f.addRow("模型状态", self.lb_models)
+        f.addRow("模型目录", self.lb_model_dir)
         f.addRow("推理配置", QLabel(accel.capability_summary(self.settings.data)))
         f.addRow("实时浮层", QLabel("两个独立透明窗口固定在屏幕顶部中央："
                                    "文字（后续语音会修正前面已显示的字）、随音量变化的 1~4 条曲线"))
@@ -413,6 +437,8 @@ class SettingsWindow(QWidget):
             "smart_output": self.ck_smart.isChecked(),
             "smart_output_when_unknown": self.cb_unknown.currentText(),
             "live_preview": self.ck_live.isChecked(),
+            "overlay_style": self.cb_overlay_style.currentText(),
+            "interaction_sound": self.ck_sound.isChecked(),
             "theme": self.cb_theme.currentData() or DEFAULT_THEME,
             "model": self.cb_model.currentText(),
             "language": self.cb_lang.currentText(),

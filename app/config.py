@@ -107,7 +107,9 @@ DEFAULT_SETTINGS: dict = {
     "smart_output": True,  # 有输入框焦点才粘贴；无焦点只写剪贴板
     "smart_output_when_unknown": "paste",  # 焦点无法判断时：paste（默认，保证「说了就出字」）/ clipboard（保守，只复制需手动 ⌘V）
     "first_run_done": False,  # 首次启动弹出「怎么用」引导
-    "theme": "frost",  # 内置主题 key，见 app/ui/themes.py THEMES（默认浅白毛玻璃）
+    "theme": "aurora",  # 内置主题 key，见 app/ui/themes.py THEMES（默认极光：文字+曲线无底板）
+    "overlay_style": "classic",  # 浮层样式：classic（原样式，文字/曲线两窗）/ pill（单条胶囊，简洁风）
+    "interaction_sound": True,  # 交互声音：开始/结束听写的提示音（ 原声）
     "ax_guide_auto": True,  # 辅助功能未授权时，启动后自动弹出授权引导窗口
     # ---- 文本润色（全部本地规则，可叠加本地 LLM）----
     "postprocess": {
@@ -198,10 +200,10 @@ class Settings:
             self._data["organize_llm"] = DEFAULT_SETTINGS["organize_llm"]
             self._data["llm_enabled"] = DEFAULT_SETTINGS["llm_enabled"]
             self.save()
-        # 旧默认主题「极光 aurora」迁到新的默认「浅白毛玻璃 frost」；
-        # 仅当用户从未主动改过主题时生效，显式选择的其它主题不受影响。
-        if self._data.get("theme") == "aurora":
-            self._data["theme"] = "frost"
+        # 旧配置若停留在最早的「极光 aurora」且无 overlay_style 键，补上默认浮层样式，
+        # 不再强制改主题（保留用户当时的视觉选择）。
+        if "overlay_style" not in self._data:
+            self._data["overlay_style"] = DEFAULT_SETTINGS["overlay_style"]
             self.save()
 
     @staticmethod

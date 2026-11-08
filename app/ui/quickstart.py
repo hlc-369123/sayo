@@ -21,8 +21,8 @@ class QuickStartWindow(QWidget):
         self.settings = settings
         self.probe = probe
         self.setWindowTitle(f"{APP_NAME} · 怎么用")
-        self.setFixedSize(580, 530)
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+        # 不锁死高度：内容（三个步骤卡片 + 按钮）较多，固定高度会裁掉底部按钮
+        self.setMinimumSize(560, 540)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 18, 22, 16)
         lay.setSpacing(10)

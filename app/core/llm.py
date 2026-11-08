@@ -64,7 +64,13 @@ class LocalTextEngine:
         if not self.enabled:
             return "未启用本地模型（仅确定性文本命令可用）"
         if not self.model_path.is_file():
-            return "本地模型文件不存在：" + str(self.model_path)
+            try:
+                from ..config import user_data_dir
+                llm_dir = user_data_dir() / "llm"
+            except Exception:
+                llm_dir = "~/Library/Application Support/sayo/llm"
+            return ("本地模型文件不存在：把任意 Qwen2.5 等 GGUF 模型放进 "
+                    f"{llm_dir} 目录，或在「设置 → 润色」里指定模型路径后保存")
         if self._llm is None:
             try:
                 self._get_llm()
