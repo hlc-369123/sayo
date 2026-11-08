@@ -15,7 +15,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from .config import APP_NAME, APP_VERSION, Settings, logs_dir, models_dir, resource_root
 from .core.asr import ASREngine
@@ -287,6 +287,7 @@ class Controller:
         self.last_text = ""  # 最近一次听写的整理结果，供一键总结使用
         self.push_to_talk = bool(self.settings.get("push_to_talk"))
         self._front_pid = None
+        self._force_paste = False  # 胶囊 ✓ 明确要求写进原输入框
         self._ax_nudged = False  # 每次运行最多自动弹一次授权引导
         self._silent_retries = 0  # 录音流假死自动重试计数（最多一次，防死循环）
 
@@ -405,6 +406,7 @@ class Controller:
     def begin(self, mode: str | None = None):
         if self.state != "idle":
             return
+        self._force_paste = False
         self._remember_front()  # 记住用户当前正在输入的应用
         mode = mode or self.mode
         ok, msg = self.asr.check_models()
@@ -433,7 +435,11 @@ class Controller:
         self.session.sig_mode.emit(mode)
         # 浮层显示后把前台交还原应用；用户点回输入框不会中断录音
         self.session.sig_command.emit("restore_front")
-        if self.settings.get("live_preview", True):
+        # 胶囊样式中间那块就是实时识别文字区，必须始终启动增量解码；
+        # live_preview 开关只决定「经典两窗」是否显示，不该让胶囊变空。
+        need_live = (bool(self.settings.get("live_preview", True))
+                     or self.settings.get("overlay_style", "pill") == "pill")
+        if need_live:
             try:
                 self.live.interval = max(0.05, min(0.5,
                     float(self.settings.get("live_interval_ms", 550)) / 1000.0))
@@ -468,6 +474,17 @@ class Controller:
         self.state = "idle"
         self.session.sig_state.emit("idle", "")
 
+    def confirm(self):
+        """胶囊 ✓：把结果直接写进用户原来那个输入框，绝不切换界面。
+
+        点 ✓ 已经是明确的「就放这儿」指令，不再走智能焦点探测：点击浮层
+        会让 AX 焦点查询短暂失真，旧逻辑因此退化成「只复制进剪贴板」，
+        用户看到的就是「点了对勾什么都没进输入框、界面还被切走了」。
+        """
+        self._force_paste = True
+        self._restore_front()
+        QTimer.singleShot(60, self.stop)
+
     def toggle(self):
         if self.state == "idle":
             self.begin()
@@ -484,12 +501,20 @@ class Controller:
             self.session.sig_error.emit(f"识别失败：{exc}")
 
     def on_result(self, result):
+        # 无论本次有没有识别到文字都必须清掉标记，否则「空结果」会把
+        # 强制粘贴误留到下一次听写。
+        force = self._force_paste
+        self._force_paste = False
         status = ""
         if result.text:
             self.last_text = result.text
-            # 智能输出：焦点在输入框才模拟粘贴；没有输入框只写剪贴板
+            # 粘贴目标必须是用户开始听写时所在的那个应用，不是本应用
+            self._restore_front()
+            # 智能输出：焦点在输入框才模拟粘贴；没有输入框只写剪贴板。
+            # 点胶囊 ✓ 时强制按「有输入框」处理，避免 AX 探测不确定导致
+            # 结果只进剪贴板。
             smart = bool(self.settings.get("smart_output", True))
-            focused = text_input_focused() if smart else True
+            focused = True if force else (text_input_focused() if smart else True)
             action, status = choose_output(
                 focused, smart=smart,
                 unknown=self.settings.get("smart_output_when_unknown", "clipboard"),
@@ -568,6 +593,7 @@ def run_gui(settings: Settings) -> int:
     from .ui.summary_window import SummaryWindow
     from .ui.themes import DEFAULT_THEME, get_theme, ui_stylesheet
     from .core.sound import set_enabled as set_sound_enabled, play_start, play_end
+    from .core.mute import set_muted as mute_system_output
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
@@ -602,8 +628,9 @@ def run_gui(settings: Settings) -> int:
     session = AppSession(settings)
     ctrl = Controller(session)
 
-    # 菜单栏（托盘）图标：必须用白色单色模板图，才会在菜单栏里显示为白色。
-    # 用抠好的白色 S（icon-menubar.png）；缺失时回退为纯白圆角块。
+    # 菜单栏（托盘）图标：白色 S（icon-menubar.png）。
+    # 注意：PySide6 的 QIcon 没有 setIsTemplate 方法（调用即 AttributeError 崩溃），
+    # 白色 PNG 在深色菜单栏上直接显示为白色，效果与系统模板图一致。
     icon_path = resource_root() / "assets" / "icon-menubar.png"
     pix = QPixmap(str(icon_path))
     if pix.isNull():
@@ -612,15 +639,18 @@ def run_gui(settings: Settings) -> int:
     else:
         pix = pix.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
     tray_icon = QIcon(pix)
-    tray_icon.setIsTemplate(True)  # macOS 模板图：随菜单栏明暗自动显示为白色/黑色
 
     overlay = RecordingOverlay(settings.get("theme", DEFAULT_THEME),
-                               settings.get("overlay_style", "classic"))
-    # 浮层完全鼠标穿透：点击它所在的区域会直达下面的输入框，
-    # 不再把「点回输入框」误判成「结束听写」。
-    # 胶囊样式的 ×/✓：× 取消（丢弃本次听写），✓ 确认（提交识别结果）
-    overlay.cancel_requested.connect(lambda: ctrl.cancel())
-    overlay.confirm_requested.connect(lambda: ctrl.stop())
+                               settings.get("overlay_style", "classic"),
+                               settings)
+    # 胶囊交互绝不切换用户界面：任何鼠标按下都把前台交还用户原来的应用。
+    # （NSWindow 已设为非激活面板，这里是系统版本差异下的第二重保险。）
+    overlay.interaction_started.connect(
+        lambda: QTimer.singleShot(0, ctrl._restore_front))
+    # 胶囊样式的 ×/✓：× 取消（丢弃本次听写），✓ 确认（直接写进原输入框）
+    overlay.cancel_requested.connect(
+        lambda: (ctrl._restore_front(), ctrl.cancel()))
+    overlay.confirm_requested.connect(ctrl.confirm)
     # 初始化交互声音开关（来自「设置 → 常规 → 交互声音」）
     set_sound_enabled(bool(settings.get("interaction_sound", True)))
     settings_win = SettingsWindow(settings, ctrl.storage, ctrl.pipeline)
@@ -657,6 +687,7 @@ def run_gui(settings: Settings) -> int:
 
     apply_app_theme()
     settings_win.theme_previewed.connect(overlay.apply_theme)
+    settings_win.overlay_style_previewed.connect(overlay.apply_style)
 
     def rebuild_hotkeys(reason: str) -> dict:
         """重新创建键盘监听：用户在系统设置里授权后必须重建事件 tap。"""
@@ -721,6 +752,7 @@ def run_gui(settings: Settings) -> int:
         ctrl.live.interval = max(0.05, min(0.5,
             float(settings.get("live_interval_ms", 550)) / 1000.0))
         apply_app_theme()
+        overlay.set_live_preview(bool(settings.get("live_preview", True)))
         overlay.apply_theme(settings.get("theme", DEFAULT_THEME))
         overlay.apply_style(settings.get("overlay_style", "classic"))
         set_sound_enabled(bool(settings.get("interaction_sound", True)))
@@ -781,6 +813,7 @@ def run_gui(settings: Settings) -> int:
         elif cmd == "restart_recording":
             ctrl.restart_recording()
         elif cmd == "quit":
+            mute_system_output(False)  # 兜底：退出时若仍处于静音会话则恢复用户音量
             ctrl.shutdown()
             app.quit()
 
@@ -788,6 +821,12 @@ def run_gui(settings: Settings) -> int:
 
     def on_state(state, text):
         overlay.set_state(state, text)
+        # 语音输入时静音其他活动音频（可在设置关闭）：进入录音静音，结束/取消恢复
+        if bool(settings.get("mute_others_during_input", False)):
+            if state == "recording" and _prev_state[0] != "recording":
+                mute_system_output(True)
+            elif _prev_state[0] == "recording" and state != "recording":
+                mute_system_output(False)
         # 交互声音：进入 recording 播放开始音，离开 recording 播放结束音
         if state == "recording" and _prev_state[0] != "recording":
             play_start()
@@ -796,9 +835,11 @@ def run_gui(settings: Settings) -> int:
         _prev_state[0] = state
 
     def on_result(result):
-        # 最终文字一定显示：即使实时预览引擎没吐字，也能看到这次识别的结果
-        overlay.set_final_text(result.text)
-        ctrl.on_result(result)
+        # 激活应用是异步的：先恢复用户原来的应用，稍等再检测焦点并粘贴。
+        # 少了这一步，⌘V 会发给被切到前台的本应用，输入框里什么都不会出现。
+        # 识别结果直接写入输入框，屏幕上不留任何文字。
+        ctrl._restore_front()
+        QTimer.singleShot(140, lambda: ctrl.on_result(result))
 
     def on_error(msg):
         overlay.set_state("error", msg[:42])

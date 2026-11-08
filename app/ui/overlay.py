@@ -16,7 +16,7 @@ import math
 import sys
 import time
 
-from PySide6.QtCore import Qt, QTimer, Signal, QRect, QObject
+from PySide6.QtCore import Qt, QTimer, Signal, QRect, QRectF, QPointF, QObject
 from PySide6.QtGui import (QColor, QCursor, QFont, QLinearGradient, QBrush,
                            QPainter, QPainterPath, QPen)
 from PySide6.QtWidgets import QApplication, QWidget
@@ -28,13 +28,29 @@ TEXT_HEIGHT = 52
 WAVE_HEIGHT = 74
 BAND_COUNT = 28
 
-# ---- 胶囊浮层（pill 样式，简洁风单条）常量：小巧、清晰 ----
-PILL_W = 430
-PILL_H = 46
-PILL_PAD = 15
-PILL_BTN_R = 11
-PILL_LOGO = 20
-PILL_BANDS = 7
+# ---- 胶囊浮层（pill 样式，单条）常量：小巧、清晰、配色跟随主题 ----
+PILL_W = 360          # 默认宽度（可由用户拖拽右边缘调整）
+PILL_W_MIN = 240      # 最短：仍放得下 × / 波形 / ✓
+PILL_W_MAX = 1000     # 最长：可显示更多识别文字
+PILL_H = 40
+PILL_BTN_R = 9
+PILL_BANDS = 12
+PILL_RESIZE_ZONE = 16  # 右边缘拉伸热区宽度（鼠标移上去变左右箭头）
+NOISE_FLOOR = 0.16     # 波形底噪门限：静音时归 0，波形静止
+
+
+def _mix(a: QColor, b: QColor, t: float) -> QColor:
+    """两色线性混合，用于从主题色派生按钮/描边色（不引入主题外的杂色）。"""
+    return QColor(int(a.red() + (b.red() - a.red()) * t),
+                  int(a.green() + (b.green() - a.green()) * t),
+                  int(a.blue() + (b.blue() - a.blue()) * t),
+                  int(a.alpha() + (b.alpha() - a.alpha()) * t))
+
+
+def _with_alpha(c: QColor, alpha: int) -> QColor:
+    out = QColor(c)
+    out.setAlpha(alpha)
+    return out
 
 # NSWindowCollectionBehavior：所有 Space + 不参与窗口循环 + 固定 + 可作为全屏辅助窗口
 _NS_CAN_JOIN_ALL_SPACES = 1 << 0
@@ -44,6 +60,11 @@ _NS_FULL_SCREEN_AUXILIARY = 1 << 8
 _COLLECTION_BEHAVIOR = (_NS_CAN_JOIN_ALL_SPACES | _NS_STATIONARY |
                         _NS_IGNORES_CYCLE | _NS_FULL_SCREEN_AUXILIARY)
 _NS_SCREEN_SAVER_LEVEL = 1000  # 高于普通窗口、浮动窗口、状态栏，保证始终在最上层
+# NSWindowStyleMaskNonactivatingPanel：点击/拖动本窗口时**不激活所属应用**。
+# 这是「点 ✓ 或拖胶囊就切回桌面/设置窗口、输入框失焦」的根治开关：
+# accessory 应用的普通 NSWindow 被点按时 AppKit 仍会 activate 本应用，
+# 于是 macOS 把本应用所在的 Space / 已打开的设置窗口推到前台。
+_NS_NONACTIVATING_PANEL = 1 << 7
 
 
 def _native_log(message: str) -> None:
@@ -60,16 +81,26 @@ def _native_log(message: str) -> None:
 class _FloatingWindow(QWidget):
     """透明、鼠标穿透、不抢焦点、跨 Space 常驻置顶的独立窗口基类。"""
 
-    def __init__(self, title: str, width: int, height: int):
+    def __init__(self, title: str, width: int, height: int,
+                 mouse_transparent: bool = True, nonactivating: bool = False):
         super().__init__()
         self.setWindowTitle(title)
-        # 注意：不能用 Qt.Tool —— macOS 上 Tool 窗口等价于 NSPanel，
-        # 应用一失活就会被系统隐藏，正是「点别的地方浮层就没了」的根因。
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint |
-                            Qt.WindowDoesNotAcceptFocus)
+        flags = (Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint |
+                 Qt.WindowDoesNotAcceptFocus)
+        # 只有「需要接收鼠标」的胶囊窗用 Qt.Tool。macOS 上 Qt.Tool 生成的是
+        # QNSPanel；实测普通 QNSWindow 会直接忽略
+        # NSWindowStyleMaskNonactivatingPanel 风格位（styleMask 14 → 14），
+        # QNSPanel 才能设上（14 → 142）。经典两窗是鼠标穿透的，永远不会被点，
+        # 不需要这层，也就不必承担 NSPanel 的额外行为。
+        if nonactivating:
+            flags |= Qt.Tool
+        self.setWindowFlags(flags)
+        self._nonactivating = nonactivating
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        # 鼠标穿透：经典两窗要「点穿」到下方输入框；胶囊窗要接收 ×/✓/拖动
+        self._mouse_transparent = mouse_transparent
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, mouse_transparent)
         self.setFixedSize(width, height)
         self._native_logged = ""  # 去重：同样的诊断消息只写一次
 
@@ -81,6 +112,18 @@ class _FloatingWindow(QWidget):
         self.apply_native()
         QTimer.singleShot(0, self.apply_native)
         QTimer.singleShot(160, self.apply_native)
+
+    def set_mouse_transparent(self, transparent: bool) -> None:
+        """运行时切换鼠标穿透：胶囊可见且可点击时关闭穿透，否则开启穿透。
+
+        胶囊窗口平时「透明 + 穿透」避免挡住下方内容；只有录音中（pill 样式）
+        才接收鼠标，让 ×/✓ 可点击、整条可拖动。
+        """
+        if self._mouse_transparent == transparent:
+            return
+        self._mouse_transparent = transparent
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, transparent)
+        self.apply_native()
 
     def apply_native(self) -> None:
         """让窗口跨 Space / 全屏应用常驻，并彻底不参与焦点与鼠标。
@@ -132,6 +175,29 @@ class _FloatingWindow(QWidget):
             from AppKit import NSColor  # type: ignore
             window.setLevel_(_NS_SCREEN_SAVER_LEVEL)
             window.setCollectionBehavior_(_COLLECTION_BEHAVIOR)
+            # 关键：非激活面板风格位。没有它，点胶囊上的 ×/✓ 或按住胶囊拖动，
+            # AppKit 都会先 activate 本应用 → macOS 切到本应用所在 Space，
+            # 把设置窗口/桌面推到前台，用户原来的输入框随即失焦，
+            # 识别结果就无处可粘贴了。
+            if self._nonactivating:
+                try:
+                    window.setStyleMask_(int(window.styleMask()) |
+                                         _NS_NONACTIVATING_PANEL)
+                except Exception as exc:
+                    _native_log(f"{self.windowTitle()}：非激活风格位设置失败 "
+                                f"{type(exc).__name__}: {exc}")
+                try:
+                    # NSPanel 专用方法：只在必要时才成为 key 窗口
+                    window.setBecomesKeyOnlyIfNeeded_(True)
+                except Exception:
+                    pass
+                try:
+                    # 面板默认会在应用失活时自动隐藏，必须显式关掉，
+                    # 否则又回到「点别的地方浮层就没了」的老问题。
+                    window.setHidesOnDeactivate_(False)
+                    window.setCanHide_(False)
+                except Exception:
+                    pass
             # 强制置前：设置 level 后必须 orderFront，否则可能留在已有窗口之下。
             # orderFrontRegardless 不抢焦点（本窗口 DoesNotAcceptFocus + 鼠标穿透）。
             try:
@@ -140,7 +206,8 @@ class _FloatingWindow(QWidget):
                 pass
             window.setHidesOnDeactivate_(False)   # 关键：切换应用时不隐藏
             window.setCanHide_(False)             # 关键：⌘H / 隐藏其他应用时不被收起
-            window.setIgnoresMouseEvents_(True)   # 点击穿透到下面的输入框
+            # 点击穿透：经典两窗穿透到下方输入框；胶囊窗要接收 ×/✓/拖动
+            window.setIgnoresMouseEvents_(self._mouse_transparent)
             window.setOpaque_(False)
             window.setHasShadow_(False)
             window.setBackgroundColor_(NSColor.clearColor())
@@ -148,11 +215,18 @@ class _FloatingWindow(QWidget):
                 window.setExcludedFromWindowsMenu_(True)
             except Exception:
                 pass
-            key = f"ok:{how}:{window.level()}:{window.collectionBehavior()}"
+            try:
+                style = int(window.styleMask())
+            except Exception:
+                style = -1
+            nonact = ("不适用" if not self._nonactivating else
+                      ("是" if style & _NS_NONACTIVATING_PANEL else "否！点击会切界面"))
+            key = (f"ok:{how}:{window.level()}:{window.collectionBehavior()}:{style}")
             if self._native_logged != key:
                 self._native_logged = key
                 _native_log(f"{self.windowTitle()}：原生属性已设置（{how}）"
-                            f" level={window.level()} behavior={window.collectionBehavior()}")
+                            f" level={window.level()} behavior={window.collectionBehavior()}"
+                            f" styleMask={style} 非激活面板={nonact}")
         except Exception as exc:
             if "seterr" not in self._native_logged:
                 self._native_logged = "seterr"
@@ -354,21 +428,35 @@ class _PillButton(QWidget):
         self.setCursor(Qt.PointingHandCursor)
 
     def mousePressEvent(self, event):  # noqa: N802
+        # 任何胶囊上的鼠标交互都先通知宿主把前台交还用户原来的应用。
+        # 即使非激活风格位在个别系统版本上失效，也不会切走用户界面。
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "interaction_started"):
+            parent.interaction_started.emit()
         self.clicked.emit()
         event.accept()
 
 
 class _PillWindow(_FloatingWindow):
-    """单条胶囊浮层：左 × / logo / 文字 / 分隔 / 麦克风 / 波形 / 右 ✓。
+    """单条胶囊浮层：左 × / 实时文字 / 分隔 / 波形 / 右 ✓。
 
-    形状、底色、布局完全按参考图重设计；与经典两窗样式互不干扰。
+    配色完全取自当前主题（ui_bg / ui_panel / ui_fg / ui_accent / waves），
+    跟随主题切换；×（取消）、✓（确认）圆心与胶囊两端半圆严格同心。
+    整条可拖动，右边缘可横向拉伸调宽（拉长显示更多识别文字），
+    两者都随配置持久化。状态文案一律不显示，中间只留实时识别文字。
     """
     cancel_requested = Signal()
     confirm_requested = Signal()
+    interaction_started = Signal()  # 胶囊上任何鼠标按下（点按钮/拖动/拉伸）
+    moved = Signal()          # 拖动结束
+    resized = Signal(int)     # 拉伸结束，携带新宽度
 
-    def __init__(self, theme: Theme):
-        super().__init__("sayo Pill", PILL_W, PILL_H)
+    def __init__(self, theme: Theme, width: int = PILL_W):
+        width = max(PILL_W_MIN, min(PILL_W_MAX, int(width)))
+        super().__init__("sayo Pill", width, PILL_H,
+                         mouse_transparent=False, nonactivating=True)
         self.theme = theme
+        self._w = width
         self._text = ""
         self._status = ""
         self._is_live = False
@@ -377,36 +465,106 @@ class _PillWindow(_FloatingWindow):
         self._bands = [0.0] * PILL_BANDS
         self._phase = 0
         self._visible = False
+        self._drag_offset = None   # 非 None = 正在拖动整条
+        self._resize_start = None  # (起点全局 x, 起始宽度) = 正在拉伸
+        self.setMouseTracking(True)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(40)
 
-        # 布局坐标（基于常量）
-        self._cancel_rect = QRect(PILL_PAD, (PILL_H - 2 * PILL_BTN_R) // 2,
-                                  2 * PILL_BTN_R, 2 * PILL_BTN_R)
-        self._logo_rect = QRect(PILL_PAD + 2 * PILL_BTN_R + 8,
-                                 (PILL_H - PILL_LOGO) // 2, PILL_LOGO, PILL_LOGO)
-        cx_conf = PILL_W - PILL_PAD - PILL_BTN_R
-        self._confirm_rect = QRect(cx_conf - PILL_BTN_R,
-                                   (PILL_H - 2 * PILL_BTN_R) // 2,
-                                   2 * PILL_BTN_R, 2 * PILL_BTN_R)
-        wave_w = PILL_BANDS * 5 + (PILL_BANDS - 1) * 4
-        wave_right = cx_conf - PILL_BTN_R - 16
-        self._wave_left = wave_right - wave_w
-        cx_mic = self._wave_left - 16 - PILL_BTN_R
-        self._mic_rect = QRect(cx_mic - PILL_BTN_R,
-                               (PILL_H - 2 * PILL_BTN_R) // 2,
-                               2 * PILL_BTN_R, 2 * PILL_BTN_R)
-        self._sep_x = cx_mic - PILL_BTN_R - 14
-        self._text_left = PILL_PAD + 2 * PILL_BTN_R + PILL_LOGO + 16
-        self._text_right = self._sep_x - 8
-
         self._btn_cancel = _PillButton(self, "cancel")
         self._btn_confirm = _PillButton(self, "confirm")
-        self._btn_cancel.setGeometry(self._cancel_rect)
-        self._btn_confirm.setGeometry(self._confirm_rect)
         self._btn_cancel.clicked.connect(self.cancel_requested)
         self._btn_confirm.clicked.connect(self.confirm_requested)
+        self._relayout()
+
+    # ---------------------------------------------------------- 布局
+    def _relayout(self) -> None:
+        """按当前宽度重排所有元素。按钮圆心 = 胶囊两端半圆圆心，保证同心。"""
+        cy = PILL_H / 2.0
+        d = PILL_BTN_R
+        # 胶囊两端是半径 PILL_H/2 的半圆，圆心分别落在这两个点上
+        self._cx_cancel = cy
+        self._cx_confirm = self._w - cy
+        self._cy = cy
+        self._btn_r = d
+        self._cancel_rect = QRect(round(self._cx_cancel - d), round(cy - d),
+                                  2 * d, 2 * d)
+        self._confirm_rect = QRect(round(self._cx_confirm - d), round(cy - d),
+                                   2 * d, 2 * d)
+        self._btn_cancel.setGeometry(self._cancel_rect)
+        self._btn_confirm.setGeometry(self._confirm_rect)
+
+        self._wave_right = self._cx_confirm - d - 12
+        self._wave_left = self._wave_right - 62
+        self._sep_x = self._wave_left - 12
+        self._text_left = self._cx_cancel + d + 12
+        self._text_right = self._sep_x - 8
+        if self._text_right - self._text_left < 36:
+            # 极窄宽度：缩短波形，优先保留文字区
+            self._wave_left += 36 - (self._text_right - self._text_left)
+            self._sep_x = self._wave_left - 8
+            self._text_right = self._sep_x - 6
+        self.setFixedSize(self._w, PILL_H)
+        self.update()
+
+    def resize_to(self, width: int) -> None:
+        """拖拽右边缘时实时改宽；宽度变化让文字区自然增减可显示字数。"""
+        w = max(PILL_W_MIN, min(PILL_W_MAX, int(width)))
+        if w == self._w:
+            return
+        self._w = w
+        self._relayout()
+
+    # ---------------------------------------------------------- 拖动 / 拉伸
+    @property
+    def is_dragging(self) -> bool:
+        """拖动或拉伸中为 True，宿主据此在周期性复位时跳过胶囊定位。"""
+        return self._drag_offset is not None or self._resize_start is not None
+
+    def _in_resize_zone(self, x) -> bool:
+        return x >= self._w - PILL_RESIZE_ZONE
+
+    def mousePressEvent(self, event):  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            # 拖动/拉伸绝不能把用户正在输入的应用切到后台
+            self.interaction_started.emit()
+            if self._in_resize_zone(event.position().x()):
+                self._resize_start = (event.globalPosition().toPoint().x(), self._w)
+            else:
+                self._drag_offset = (event.globalPosition().toPoint()
+                                     - self.frameGeometry().topLeft())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: N802
+        if self._resize_start is not None and (event.buttons() & Qt.LeftButton):
+            gx = event.globalPosition().toPoint().x()
+            start_gx, start_w = self._resize_start
+            self.resize_to(start_w + gx - start_gx)
+            event.accept()
+            return
+        if self._drag_offset is not None and (event.buttons() & Qt.LeftButton):
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
+            return
+        self.setCursor(Qt.SizeHorCursor if self._in_resize_zone(event.position().x())
+                       else Qt.OpenHandCursor)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        if self._resize_start is not None:
+            self._resize_start = None
+            self.resized.emit(self._w)
+            event.accept()
+            return
+        if self._drag_offset is not None:
+            self._drag_offset = None
+            self.moved.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     # ---------------------------------------------------------- 数据入口
     def set_theme(self, theme: Theme) -> None:
@@ -428,15 +586,19 @@ class _PillWindow(_FloatingWindow):
         self.update()
 
     def set_interactive(self, on: bool) -> None:
-        """样式切回经典时关闭 ×/✓ 的点击捕获，避免透明空胶囊抢点击。"""
+        """胶囊可点击时（pill 样式 + 录音中）接收鼠标；否则整体穿透。"""
         self._btn_cancel.setAttribute(Qt.WA_TransparentForMouseEvents, not on)
         self._btn_confirm.setAttribute(Qt.WA_TransparentForMouseEvents, not on)
+        self.set_mouse_transparent(not on)
 
     def set_level(self, level: float) -> None:
         try:
-            self._level = min(1.0, max(self._level * 0.92, float(level)))
+            lvl = float(level)
         except (TypeError, ValueError):
-            pass
+            lvl = 0.0
+        if lvl < NOISE_FLOOR:  # 底噪门限：静音时波形保持静止
+            lvl = 0.0
+        self._level = min(1.0, max(self._level * 0.92, lvl))
         if self._visible:
             self.update()
 
@@ -448,6 +610,8 @@ class _PillWindow(_FloatingWindow):
         try:
             boosted = min(1.0, max(float(level), float(rms) * 40.0))
         except (TypeError, ValueError):
+            boosted = 0.0
+        if boosted < NOISE_FLOOR:  # 底噪门限：静音时波形保持静止
             boosted = 0.0
         self._level = min(1.0, max(self._level * 0.90, boosted))
         if bands:
@@ -482,117 +646,131 @@ class _PillWindow(_FloatingWindow):
         b = self._bands[min(PILL_BANDS - 1, i + 1)]
         return a + (b - a) * frac
 
-    def _draw_btn(self, p, rect, bg, glyph, gcolor):
-        p.setPen(Qt.NoPen)
+    def _draw_btn(self, p, cx, cy, r, bg, glyph, gcolor, border=None):
+        """圆底与符号共用同一个浮点圆心 (cx, cy)，严格同心。
+
+        不再用 QRect.center()：整数 QRect 的中心有 0.5px 截断，叠加
+        drawEllipse(QRect) 的端点语义，会让符号看起来偏出圆心。
+        """
+        p.setPen(QPen(border, 1) if border else Qt.NoPen)
         p.setBrush(QBrush(bg))
-        p.drawEllipse(rect)
-        cx, cy = rect.center().x(), rect.center().y()
-        r = rect.width() * 0.30
-        p.setPen(QPen(gcolor, 2.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+        if glyph is None or gcolor is None:
+            return
+        s = r * 0.56  # 符号半径
+        p.setPen(QPen(gcolor, 2.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         p.setBrush(Qt.NoBrush)
         if glyph == "x":
-            p.drawLine(cx - r, cy - r, cx + r, cy + r)
-            p.drawLine(cx - r, cy + r, cx + r, cy - r)
-        else:  # check
+            # 两条完全对称的斜线，交点恰好是圆心
+            p.drawLine(QPointF(cx - s, cy - s), QPointF(cx + s, cy + s))
+            p.drawLine(QPointF(cx - s, cy + s), QPointF(cx + s, cy - s))
+        elif glyph == "check":
+            # 包围盒上下/左右都以圆心对称（视觉重心也居中）
             path = QPainterPath()
-            path.moveTo(cx - r * 0.9, cy)
-            path.lineTo(cx - r * 0.1, cy + r * 0.62)
-            path.lineTo(cx + r * 1.05, cy - r * 0.72)
+            path.moveTo(cx - 0.95 * s, cy + 0.02 * s)
+            path.lineTo(cx - 0.18 * s, cy + 0.58 * s)
+            path.lineTo(cx + 0.95 * s, cy - 0.58 * s)
             p.drawPath(path)
-
-    def _draw_mic(self, p, rect, active: bool):
-        bg = QColor("#4F8BFF") if active else QColor("#B9B6C8")
-        self._draw_btn(p, rect, bg, None, None)
-        cx, cy = rect.center().x(), rect.center().y()
-        p.setPen(QPen(QColor("#FFFFFF"), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-        p.setBrush(Qt.NoBrush)
-        p.drawRoundedRect(int(cx - 4), int(cy - 9), 8, 12, 4, 4)
-        p.drawArc(int(cx - 6), int(cy - 3), 12, 11, 25 * 16, 130 * 16)
 
     def paintEvent(self, event):  # noqa: N802
         if not self._visible:
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        w = self._w
+        t = self.theme
 
-        # 柔和投影：三层偏移圆角矩形，保证在任何背景上都清晰可见
-        for off, alpha in ((3, 38), (2, 26), (1, 16)):
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(0, 0, 0, alpha))
-            p.drawRoundedRect(0, off, PILL_W, PILL_H,
-                              PILL_H / 2, PILL_H / 2)
+        # 所有颜色都取自当前主题，不引入主题外的杂色（切换主题自动跟随）
+        c_panel = QColor(t.ui_panel)
+        c_bg = QColor(t.ui_bg)
+        c_fg = QColor(t.ui_fg)
+        c_muted = QColor(t.ui_muted)
+        c_accent = QColor(t.ui_accent)
+        c_border = QColor(t.ui_border)
+        c_wave = QColor(t.waves[0]) if t.waves else c_fg
+        dark = (c_bg.red() + c_bg.green() + c_bg.blue()) < 330
 
-        # 胶囊底：清晰可辨的薰衣草紫灰渐变（非浅白，避免看不清）
-        grad = QLinearGradient(0, 0, PILL_W, PILL_H)
-        grad.setColorAt(0, QColor("#D9D4F0"))
-        grad.setColorAt(1, QColor("#C3BCE2"))
-        p.setPen(QPen(QColor("#A89FCF"), 1.5))
-        p.setBrush(QBrush(grad))
-        p.drawRoundedRect(0, 0, PILL_W, PILL_H, PILL_H / 2, PILL_H / 2)
-
-        # × 取消
-        self._draw_btn(p, self._cancel_rect, QColor("#FFFFFF"),
-                       "x", QColor("#3A3A45"))
-        # logo（品牌 S 渐变）
-        lx, ly = self._logo_rect.x(), self._logo_rect.y()
-        lg = QLinearGradient(lx, ly, lx, ly + PILL_LOGO)
-        lg.setColorAt(0, QColor("#4F8BFF"))
-        lg.setColorAt(1, QColor("#8B6BFF"))
-        f = QFont()
-        f.setPointSize(15)
-        f.setWeight(QFont.Bold)
-        p.setFont(f)
+        # 单一连续 stadium 路径：一次填充 + 一次描边，没有任何分层投影。
+        # 旧实现用三层「向下偏移的圆角矩形」当阴影，偏移的阴影在左右两个
+        # 半圆端会露出灰色月牙，加上端弧与直线的分别描边，看起来就像
+        # 两个半圆贴片被单独抠出来贴到长条上。现在端弧与上下直线属于
+        # 同一条路径，从几何上不可能出现接缝或双层边。
+        r = (PILL_H - 1) / 2.0
+        shape = QPainterPath()
+        shape.addRoundedRect(QRectF(0.5, 0.5, w - 1, PILL_H - 1), r, r)
+        grad = QLinearGradient(0, 0, w, 0)
+        grad.setColorAt(0, _mix(c_panel, c_accent, 0.05 if dark else 0.025))
+        grad.setColorAt(1, c_bg)
         p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(lg))
-        p.drawText(self._logo_rect, Qt.AlignCenter, "S")
+        p.setBrush(QBrush(grad))
+        p.drawPath(shape)
+        # 只描一圈细边：浅底上也能把胶囊和白色桌面分开
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(_mix(c_border, c_muted, 0.45 if dark else 0.30), 1))
+        p.drawPath(shape)
 
-        # 文字
-        text = self._text or self._status
+        # × 取消：主题弱色圆 + 主题前景色叉；无描边环，避免「贴纸感」
+        self._draw_btn(p, self._cx_cancel, self._cy, self._btn_r,
+                       _mix(c_panel, c_muted, 0.16), "x", c_fg)
+
+        # 实时识别文字：只画 _text，绝不画状态文案；
+        # 按可用宽度截断——把胶囊拉长就显示更多字，拉短就更少。
+        text = self._text
         if text:
-            if len(text) > 30:
-                text = "…" + text[-29:]
             f = QFont()
-            f.setPointSize(13)
+            f.setPointSize(12)
             f.setWeight(QFont.Medium)
             p.setFont(f)
             fm = p.fontMetrics()
+            maxw = max(20, self._text_right - self._text_left)
             tw = fm.horizontalAdvance(text)
-            maxw = self._text_right - self._text_left
-            while tw > maxw and len(text) > 4:
-                text = text[:-2] + "…"
-                tw = fm.horizontalAdvance(text)
-            tx = self._text_left + max(0, (maxw - tw) // 2)
-            p.setPen(QColor("#26222E"))
+            if tw > maxw:
+                while tw > maxw and len(text) > 1:
+                    text = text[:-1]
+                    tw = fm.horizontalAdvance(text + "…")
+                text += "…"
+            p.setPen(c_fg)
             p.setBrush(Qt.NoBrush)
-            p.drawText(int(tx), 0, int(maxw), PILL_H,
+            p.drawText(QRectF(self._text_left, 0, maxw, PILL_H),
                        Qt.AlignVCenter | Qt.AlignLeft, text)
 
-        # 分隔线
-        p.setPen(QPen(QColor("#C6C3D8"), 1.5))
-        p.drawLine(self._sep_x, 20, self._sep_x, PILL_H - 20)
+        # 分隔线：主题弱化色
+        p.setPen(QPen(_with_alpha(c_muted, 110), 1.2))
+        p.drawLine(QPointF(self._sep_x, 14), QPointF(self._sep_x, PILL_H - 14))
 
-        # 麦克风
-        self._draw_mic(p, self._mic_rect,
-                        self._state in ("recording", "transcribing"))
-
-        # 波形
-        n = PILL_BANDS
-        bw = 5
-        gap = (self._wave_left + (PILL_W - PILL_PAD - PILL_BTN_R - 16)
-               - self._wave_left - bw * n) / (n - 1) if n > 1 else 0
+        # 波形：主题曲线色。静音时电平归 0 → 一根平线；说话越多线越多。
+        level = self._level
+        count = 1 + min(3, int(level * 4.0))
         cy = PILL_H / 2.0
-        for i in range(n):
-            v = self._band_at(i / (n - 1)) if n > 1 else self._bands[0]
-            h = 5 + 32 * v
-            x = self._wave_left + i * (bw + gap)
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor("#3B7BFF"))
-            p.drawRoundedRect(int(x), int(cy - h / 2), bw, int(h), bw // 2, bw // 2)
+        base_amp = 3.0 + 11.0 * level
+        span = self._wave_right - self._wave_left
+        points = 40
+        for i in range(count):
+            amp = base_amp * (1.0 - i * 0.12)
+            path = QPainterPath()
+            for j in range(points):
+                u = j / (points - 1)
+                v = self._band_at(u)
+                phase = self._phase * 0.085 + i * 0.88
+                wave = (math.sin(2 * math.pi * (u * 2.1 + phase)) * 0.60 +
+                        math.sin(2 * math.pi * (u * 4.3 - phase * 0.62)) * 0.28 +
+                        math.sin(2 * math.pi * (u * 7.9 + phase * 1.3)) * 0.12)
+                y = (cy + wave * (0.30 + 1.0 * v) * amp +
+                     (i - (count - 1) / 2.0) * 2.0)
+                x = self._wave_left + u * span
+                if j == 0:
+                    path.moveTo(x, y)
+                else:
+                    path.lineTo(x, y)
+            p.setPen(QPen(_with_alpha(c_accent, 60), 5.0, Qt.SolidLine,
+                          Qt.RoundCap, Qt.RoundJoin))
+            p.drawPath(path)
+            p.setPen(QPen(c_wave, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.drawPath(path)
 
-        # ✓ 确认
-        done = self._state == "done"
-        self._draw_btn(p, self._confirm_rect, QColor("#FFFFFF"),
-                       "check", QColor("#2E9E6B") if done else QColor("#9AA0AE"))
+        # ✓ 确认：主题强调色圆 + 主题背景色勾；同样无描边环
+        self._draw_btn(p, self._cx_confirm, self._cy, self._btn_r,
+                       c_accent, "check", c_bg)
         p.end()
 
 
@@ -600,25 +778,49 @@ class RecordingOverlay(QObject):
     """组合两种浮层样式，保持 main.py 使用的 set_state / set_* 接口不变。
 
       · classic —— 原样式：文字窗口 + 声音曲线窗口，两窗彼此独立、无底板
-      · pill    —— 新样式：单条胶囊（简洁风），所有元素都在一个椭圆框内
+      · pill    —— 新样式：单条胶囊（配色跟随主题），× / 实时文字 / 波形 / ✓
 
     两个样式都从启动就常驻（show 一次后永不 hide），保证 macOS 跨 Space 注册
     永不丢失；由 overlay_style 设置决定当前显示哪一个，另一组保持透明+穿透。
-    ×/✓ 按钮只在 pill 样式下可点击，分别请求「取消（丢弃）」与「确认（提交）」。
+    ×/✓ 只在 pill 样式且录音中可点击：× 取消（丢弃），✓ 确认（提交）；
+    胶囊整条可拖动、右边缘可拉伸调宽，位置与宽度都记入配置，重启后保持。
     """
 
     cancel_requested = Signal()
     confirm_requested = Signal()
+    interaction_started = Signal()  # 胶囊被点/被拖：宿主据此恢复原前台应用
 
-    def __init__(self, theme_key: str = DEFAULT_THEME, overlay_style: str = "classic"):
+    def __init__(self, theme_key: str = DEFAULT_THEME, overlay_style: str = "classic",
+                 settings=None):
         super().__init__()
         self.theme = get_theme(theme_key)
         self._style = overlay_style
+        self._settings = settings
+        # live_preview 只控制经典两窗是否显示；关闭时经典窗口也不许残留描边大字
+        self._live_preview = (bool(settings.get("live_preview", True))
+                              if settings is not None else True)
+        # 跨重启记忆胶囊位置与宽度
+        self._pill_pos = None
+        width = PILL_W
+        if settings is not None:
+            saved = settings.get("pill_pos")
+            if isinstance(saved, (list, tuple)) and len(saved) == 2:
+                try:
+                    self._pill_pos = (int(saved[0]), int(saved[1]))
+                except (TypeError, ValueError):
+                    self._pill_pos = None
+            try:
+                width = int(settings.get("pill_width") or PILL_W)
+            except (TypeError, ValueError):
+                width = PILL_W
         self.text_window = _TextWindow(self.theme)
         self.wave_window = _WaveWindow(self.theme)
-        self.pill_window = _PillWindow(self.theme)
+        self.pill_window = _PillWindow(self.theme, width)
         self.pill_window.cancel_requested.connect(self.cancel_requested)
         self.pill_window.confirm_requested.connect(self.confirm_requested)
+        self.pill_window.interaction_started.connect(self.interaction_started)
+        self.pill_window.moved.connect(self._on_pill_moved)
+        self.pill_window.resized.connect(self._on_pill_resized)
         self._state = "idle"
         self._status = ""
         self._live_text = ""
@@ -652,6 +854,12 @@ class RecordingOverlay(QObject):
             return
         self._style = style
         self._apply_style_visibility()
+        self._sync_text()  # 切换样式后立刻按新样式重刷文字，避免旧的描边大字残留
+
+    def set_live_preview(self, enabled: bool) -> None:
+        """设置里开关「经典两窗」后立即生效，不残留描边大字。"""
+        self._live_preview = bool(enabled)
+        self._sync_text()
 
     def _apply_style_visibility(self) -> None:
         """依据当前样式开启对应分组、并清空另一组的可见内容。
@@ -663,8 +871,8 @@ class RecordingOverlay(QObject):
             # 经典两窗：清空内容（透明+穿透，视觉上消失）
             self.text_window.set_content("", "", False)
             self.wave_window.set_visible(False)
-            # 胶囊：仅当正在听写/识别/完成时才画出来；×/✓ 可点击
-            self.pill_window.set_interactive(True)
+            # 胶囊：仅当正在录音（浮层可见）时才可点击；否则整体穿透
+            self.pill_window.set_interactive(self._state != "idle")
             if self._state != "idle":
                 self.pill_window.set_visible(True)
                 self.pill_window.show_overlay()
@@ -695,8 +903,33 @@ class RecordingOverlay(QObject):
         y = g.top() + 12
         self.text_window.move(x, y)
         self.wave_window.move(x, y + TEXT_HEIGHT + 4)
-        px = g.center().x() - PILL_W // 2
-        self.pill_window.move(px, g.top() + 12)
+        # 胶囊：优先用上次拖动记忆的位置；没有记忆则居中（拖动中不打断用户）
+        if not self.pill_window.is_dragging:
+            pw = self.pill_window.width()  # 用户可调宽度
+            if self._pill_pos is not None:
+                px, py = self._pill_pos
+                # 夹到当前屏幕可视范围，防止换显示器/分辨率后跑到屏外
+                px = max(g.left(), min(g.right() - pw, px))
+                py = max(g.top(), min(g.bottom() - PILL_H, py))
+                self.pill_window.move(px, py)
+            else:
+                self.pill_window.move(g.center().x() - pw // 2, g.top() + 12)
+
+    def _on_pill_moved(self) -> None:
+        pos = self.pill_window.pos()
+        self._pill_pos = (pos.x(), pos.y())
+        if self._settings is not None:
+            self._settings.set("pill_pos", [pos.x(), pos.y()])
+
+    def _on_pill_resized(self, width: int) -> None:
+        if self._settings is None:
+            return
+        self._settings.set("pill_width", int(width))
+        # 同时固定当前位置：否则拉伸后下一次 _place() 会按新宽度重新居中，
+        # 胶囊会突然整体平移一下。
+        pos = self.pill_window.pos()
+        self._pill_pos = (pos.x(), pos.y())
+        self._settings.set("pill_pos", [pos.x(), pos.y()])
 
     # ------------------------------------------------------------ 状态
     def set_state(self, state: str, text: str = "") -> None:
@@ -713,10 +946,13 @@ class RecordingOverlay(QObject):
             self.wave_window.reset()
             self.pill_window.reset()
 
-        active = state in ("recording", "transcribing", "done", "error")
+        # 只有「录音中」才显示浮层；结束后（识别/完成）不再在屏幕上显示文字，
+        # 识别结果直接写入输入框。「error」仍显示，方便用户立刻看到错误。
+        active = state in ("recording", "error")
         if active:
             self._place()
             if self._style == "pill":
+                self.pill_window.set_interactive(True)
                 self.pill_window.set_visible(True)
                 self.pill_window.show_overlay()
             else:
@@ -733,15 +969,28 @@ class RecordingOverlay(QObject):
             self.wave_window.set_visible(False)
             self.text_window.set_content("", "", False)
             self.pill_window.set_visible(False)
-        if state in ("done", "error"):
-            self._done_at = time.monotonic()
+            self.pill_window.set_interactive(False)
         self._sync_text()
 
     def _sync_text(self) -> None:
         is_live = self._state == "recording" and bool(self._live_text)
-        shown = self._live_text or self._status
-        self.text_window.set_content(shown, self._status, is_live)
-        self.pill_window.set_content(shown, self._status, is_live)
+        if self._style == "pill":
+            # 关键：胶囊样式下经典文字窗口必须始终为空。它从启动就常驻显示，
+            # 一旦被写入状态文案，就会以描边大字出现在屏幕别处
+            # （「正在聆听…（WorkBuddy）· MacBook Air 麦克风」）。
+            self.text_window.set_content("", "", False)
+            self.wave_window.set_visible(False)
+            # 胶囊中间只放实时识别文字；状态文案一律不显示
+            self.pill_window.set_content(self._live_text, "", is_live)
+        else:
+            if self._live_preview:
+                self.text_window.set_content(self._live_text or self._status,
+                                             self._status, is_live)
+            else:
+                # 用户关掉了「经典两窗」：常驻窗口必须清空，否则状态文案
+                # 仍会以描边大字浮在屏幕顶部。
+                self.text_window.set_content("", "", False)
+            self.pill_window.set_content("", "", False)
         self.pill_window.set_state(self._state)
 
     def _maintain(self) -> None:
@@ -753,20 +1002,15 @@ class RecordingOverlay(QObject):
         self.wave_window.apply_native()
         if self._style == "pill":
             self.pill_window.apply_native()
-        if self._state in ("done", "error") and self._done_at and \
-                time.monotonic() - self._done_at > 3.5:
-            self.set_state("idle")
+            # NSPanel 被系统收起时（换 Space / 全屏切换）立刻恢复显示，
+            # 避免「点别的地方浮层就没了」在 Tool 窗口上重演。
+            if self._state == "recording" and not self.pill_window.isVisible():
+                self.pill_window.show_overlay()
 
     # ------------------------------------------------------------ 数据入口
     def set_live_text(self, text: str) -> None:
         """实时文字：后续音频重解码整句时会修正前面已显示的字。"""
         self._live_text = (text or "").strip()
-        self._sync_text()
-
-    def set_final_text(self, text: str) -> None:
-        """识别结束后把最终文字留在浮层，即使实时预览没出字也能看到结果。"""
-        if text and text.strip():
-            self._live_text = text.strip()
         self._sync_text()
 
     def set_level(self, level: float) -> None:

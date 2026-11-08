@@ -109,8 +109,12 @@ DEFAULT_SETTINGS: dict = {
     "first_run_done": False,  # 首次启动弹出「怎么用」引导
     "theme": "aurora",  # 内置主题 key，见 app/ui/themes.py THEMES（默认极光：文字+曲线无底板）
     "overlay_style": "pill",  # 浮层样式：pill（单条胶囊，简洁风，默认）/ classic（原样式，文字/曲线两窗）
+    "pill_pos": None,  # 胶囊浮层上次拖动的位置 [x, y]；None = 启动时居中
+    "pill_width": 360,  # 胶囊宽度（拖拽右边缘可调，拉长显示更多识别文字）
     "overlay_default_migrated": False,  # 一次性迁移标记：旧 classic 默认已升级为 pill
-    "interaction_sound": True,  # 交互声音：开始/结束听写的提示音（ 原声）
+    "interaction_sound": True,  # 交互声音：开始/结束听写的提示音
+    "mute_others_during_input": False,  # 语音输入时静音其他活动音频（录音开始静音系统输出，结束恢复）
+    "input_device": None,  # 听写输入麦克风：None=跟随系统默认；整数=sounddevice 设备索引
     "ax_guide_auto": True,  # 辅助功能未授权时，启动后自动弹出授权引导窗口
     # ---- 文本润色（全部本地规则，可叠加本地 LLM）----
     "postprocess": {
@@ -205,6 +209,13 @@ class Settings:
         # 不再强制改主题（保留用户当时的视觉选择）。
         if "overlay_style" not in self._data:
             self._data["overlay_style"] = DEFAULT_SETTINGS["overlay_style"]
+            self.save()
+        # 兼容历史脏值：旧版 _save() 曾把下拉显示文案存进 overlay_style
+        # （如「胶囊（单条椭圆，简洁风）」），导致启动时 RecordingOverlay
+        # 匹配不到 "pill" 而回退经典两窗。加载时统一规范化为机器值。
+        _style_val = str(self._data.get("overlay_style", "pill"))
+        if _style_val not in ("classic", "pill"):
+            self._data["overlay_style"] = "pill" if "胶囊" in _style_val else "classic"
             self.save()
         # 一次性迁移：上一版默认是 classic，升级后改为 pill 默认（用户此后手动选回 classic 不会被翻回）。
         if (self._data.get("overlay_style") == "classic"

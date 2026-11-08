@@ -120,13 +120,24 @@ QWidget {{ background: {theme.ui_bg}; color: {theme.ui_fg}; font-size: 13px; }}
 QLabel {{ background: transparent; }}
 QToolTip {{ background: {theme.ui_panel}; color: {theme.ui_fg};
             border: 1px solid {theme.ui_border}; padding: 4px; }}
+/* 卡片：标题是卡片内独立的一行，垂直居中、与内容左对齐。
+   旧实现用 QGroupBox::title + subcontrol-origin: margin，标题浮在边框线上、
+   贴着卡片左上角，看起来明显偏上、偏左。 */
+QFrame#card {{ background: {theme.ui_panel}; border: 1px solid {theme.ui_border};
+               border-radius: 10px; }}
+QLabel#cardTitle {{ color: {theme.ui_fg}; font-weight: 600; background: transparent; }}
+/* 关于页：滚动区与手工行。标签用弱化色、固定列宽，值由内容决定行高。 */
+QScrollArea#aboutScroll, QScrollArea#tabScroll {{ background: transparent; border: none; }}
+QScrollArea#tabScroll > QWidget > QWidget {{ background: transparent; }}
+QLabel#aboutKey {{ color: {theme.ui_muted}; background: transparent; }}
 QGroupBox {{
     background: {theme.ui_panel}; border: 1px solid {theme.ui_border};
-    border-radius: 10px; margin-top: 16px; padding: 10px 8px 8px 8px;
+    border-radius: 10px; margin-top: 0; padding: 16px 14px 14px 14px;
     font-weight: 600;
 }}
-QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px;
-                    color: {theme.ui_fg}; background: transparent; }}
+QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left;
+                    left: 14px; top: 2px; padding: 0 6px;
+                    color: {theme.ui_fg}; background: {theme.ui_panel}; }}
 QPushButton {{
     background: {theme.ui_panel}; border: 1px solid {theme.ui_border};
     border-radius: 8px; padding: 6px 16px; color: {theme.ui_fg};

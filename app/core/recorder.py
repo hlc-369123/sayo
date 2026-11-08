@@ -113,8 +113,30 @@ class Recorder:
             )
             self._stream.start()
         except Exception as exc:
-            self._recording = False
-            raise RecorderError(f"麦克风打开失败：{exc}（请检查麦克风权限与输入设备）") from exc
+            if device is not None:
+                # 指定的输入设备不可用（被拔出/被占用）：自动回退系统默认，不中断听写
+                try:
+                    self._stream = sd.InputStream(
+                        samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="float32",
+                        blocksize=int(SAMPLE_RATE * 0.05), device=None,
+                        callback=self._callback)
+                    self._stream.start()
+                    device = None
+                except Exception as exc2:
+                    self._recording = False
+                    raise RecorderError(
+                        f"麦克风打开失败：{exc2}（请检查麦克风权限与输入设备）") from exc2
+            else:
+                self._recording = False
+                raise RecorderError(
+                    f"麦克风打开失败：{exc}（请检查麦克风权限与输入设备）") from exc
+        # 显示实际打开的设备名（指定设备/回退后都可能不同于系统默认）
+        try:
+            info = sd.query_devices(device=self._stream.device)
+            if info and info.get("name"):
+                self.device_name = str(info["name"])
+        except Exception:
+            pass
         self._start_guard()
 
     def _callback(self, indata, frames, time_info, status) -> None:
