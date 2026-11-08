@@ -1,4 +1,4 @@
-"""轻述 Saylo 入口：全离线 AI 语音键盘（菜单栏常驻应用）。
+"""轻述 sayo 入口：全离线 AI 语音键盘（菜单栏常驻应用）。
 
 用法：
     python -m app.main                 启动桌面应用
@@ -394,7 +394,7 @@ class Controller:
                 pass
             self.session.sig_error.emit(
                 "麦克风权限未授权：已为您弹出系统授权框并打开「隐私与安全性 → 麦克风」。"
-                "请勾选「轻述 Saylo」的开关（若列表里有多个同名条目，先把旧的删掉），"
+                "请勾选「轻述 sayo」的开关（若列表里有多个同名条目，先把旧的删掉），"
                 "然后回到输入框重新按 ⌘ + Shift + 空格 听写。")
             return
         # 其他原因：设备被占用 / 蓝牙断开 / 无输入设备
@@ -544,11 +544,8 @@ class AppSession:
 
 
 def run_gui(settings: Settings) -> int:
-    from PySide6.QtCore import QPointF, Qt, QTimer
-    from PySide6.QtGui import (
-        QAction, QBrush, QColor, QFont, QFontMetricsF, QIcon, QLinearGradient,
-        QPainter, QPen, QPixmap,
-    )
+    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtGui import QAction, QColor, QIcon, QPixmap
     from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
     from .ui.history_window import HistoryWindow
@@ -592,27 +589,14 @@ def run_gui(settings: Settings) -> int:
     session = AppSession(settings)
     ctrl = Controller(session)
 
-    # 图标：纯代码绘制，不依赖任何外部资源（品牌：蓝紫渐变圆角底 + 白色 S）
-    pix = QPixmap(64, 64)
-    pix.fill(Qt.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.Antialiasing)
-    grad = QLinearGradient(0, 0, 64, 64)
-    grad.setColorAt(0.0, QColor("#4F8BFF"))
-    grad.setColorAt(1.0, QColor("#8B6BFF"))
-    p.setBrush(grad)
-    p.setPen(Qt.NoPen)
-    p.drawRoundedRect(2, 2, 60, 60, 15, 15)
-    f = QFont("Avenir Next")
-    f.setPixelSize(40)
-    f.setWeight(QFont.Bold)
-    p.setFont(f)
-    p.setPen(QColor("#FFFFFF"))
-    fm = QFontMetricsF(f)
-    br = fm.tightBoundingRect("S")
-    p.drawText(QPointF((64 - br.width()) / 2.0 - br.left(),
-                       (64 - br.height()) / 2.0 - br.top()), "S")
-    p.end()
+    # 图标：直接用品牌图标源图（用户提供），不重绘；缺失时回退为纯色圆角块
+    icon_path = resource_root() / "assets" / "icon.png"
+    pix = QPixmap(str(icon_path))
+    if pix.isNull():
+        pix = QPixmap(64, 64)
+        pix.fill(QColor("#4F8BFF"))
+    else:
+        pix = pix.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
     overlay = RecordingOverlay(settings.get("theme", DEFAULT_THEME))
     # 浮层完全鼠标穿透：点击它所在的区域会直达下面的输入框，

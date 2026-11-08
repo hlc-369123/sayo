@@ -1,7 +1,7 @@
-# 轻述 Saylo · 全离线 AI 语音键盘
+# 轻述 sayo · 全离线 AI 语音键盘
 
 <p align="center">
-  <img src="assets/logo.png" alt="轻述 Saylo" width="180">
+  <img src="assets/icon.png" alt="轻述 sayo" width="180">
 </p>
 
 <p align="center"><em>Speak naturally. Write effortlessly. · 说得自然，写得轻松。</em></p>
@@ -33,7 +33,7 @@
 
 ## 这是什么
 
-轻述 Saylo 是一个可安装在个人电脑上的**独立桌面应用**，「」这类桌面听写工具的能力：
+轻述 sayo 是一个可安装在个人电脑上的**独立桌面应用**，「」这类桌面听写工具的能力：
 在任意应用（浏览器、微信、Word、IDE……）中按快捷键说话，语音即时被识别、润色成通顺文字，
 并自动落到当前输入框的光标位置。
 
@@ -106,17 +106,17 @@
 
 ### A. 拿到「安装包」（最省事，推荐普通用户）
 
-你拿到的是 `轻述 Saylo.app` / `Saylo-1.0.0-macos.dmg` / `Saylo-1.0.0-macos.pkg`
+你拿到的是 `轻述 sayo.app` / `sayo-1.0.0-macos.dmg` / `sayo-1.0.0-macos.pkg`
 （或 Windows 的 ZIP / EXE、Linux 的 tar.gz）。**直接用，不需要开发环境。**
 
 - **macOS**
-  - DMG：双击挂载 → 把「轻述 Saylo」拖进「应用程序」。
+  - DMG：双击挂载 → 把「轻述 sayo」拖进「应用程序」。
   - PKG：双击按向导安装到 `/Applications`。
   - 未公证的版本（ad-hoc 签名）首次启动若被拦截：右键 → 打开，或
     系统设置 → 隐私与安全性 → 仍要打开。
   - 气密 / 断网环境：用仓库里的 `scripts/install_offline_macos.sh` 从 U 盘直接装（去 quarantine + 自动清理旧授权记录）。
-- **Windows**：解压 ZIP 到任意目录双击 `Saylo.exe`；或运行 Inno Setup 生成的 `setup.exe`。
-- **Linux**：`tar -xzf Saylo-*.tar.gz && ./Saylo/Saylo`，无需 root。
+- **Windows**：解压 ZIP 到任意目录双击 `sayo.exe`；或运行 Inno Setup 生成的 `setup.exe`。
+- **Linux**：`tar -xzf sayo-*.tar.gz && ./sayo/sayo`，无需 root。
 
 > 安装包里**已含语音模型**，所以装完即可用，不用再下载。
 
@@ -212,7 +212,7 @@ Windows / Linux 的权限差异见 [使用手册](#文档索引)。
 | 识别为空 / 吞字 | 灵敏度调到 `high`/`max`，开 AGC 与二次复核；确认麦克风没静音 |
 | 切换应用 / 桌面后看不到浮层 | 本应用已做跨 Space 常驻；若仍消失，重启应用即可 |
 | 浮层文字不动 / 曲线不动 | 检查麦克风权限与输入电平；实时预览异常见 `logs/runtime.log` |
-| 翻译 / 总结提示需要模型 | 把本地 GGUF 模型放到 `~/Library/Application Support/Saylo/llm/`，或设置里指定路径 |
+| 翻译 / 总结提示需要模型 | 把本地 GGUF 模型放到 `~/Library/Application Support/sayo/llm/`，或设置里指定路径 |
 | 覆盖安装后快捷键 / 辅助功能失效 | 见上文「权限」提示，清理旧授权条目 |
 
 完整排查表见 [使用手册](#文档索引)。

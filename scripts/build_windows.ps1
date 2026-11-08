@@ -18,17 +18,17 @@ $env:QT_QPA_PLATFORM = "offscreen"
 & $PY scripts/verify_offline.py --check-models
 
 Write-Host "=== 3/5 单元测试 ==="
-$env:SAYLO_DATA = "$env:TEMP\qt-build-test"
+$env:SAYO_DATA = "$env:TEMP\qt-build-test"
 $PYTEST_TMP = Join-Path $env:TEMP ("qt-pytest-" + [guid]::NewGuid().ToString("N"))
 & $PY -m pytest -q tests --basetemp $PYTEST_TMP -p no:cacheprovider
 
 Write-Host "=== 4/5 PyInstaller 打包（onedir，模型随包） ==="
-& $PY -m PyInstaller --noconfirm --distpath "$ROOT\dist" --workpath "$ROOT\build" packaging\saylo.spec
-$OUT = Join-Path $ROOT "dist\Saylo"
-if (-not (Test-Path (Join-Path $OUT "Saylo.exe"))) { throw "打包失败：未生成 Saylo.exe" }
+& $PY -m PyInstaller --noconfirm --distpath "$ROOT\dist" --workpath "$ROOT\build" packaging\sayo.spec
+$OUT = Join-Path $ROOT "dist\sayo"
+if (-not (Test-Path (Join-Path $OUT "sayo.exe"))) { throw "打包失败：未生成 sayo.exe" }
 
 Write-Host "=== 5/5 生成离线 ZIP / 可选安装器 ==="
-$ZIP = Join-Path $ROOT "dist\Saylo-$VERSION-windows-x64.zip"
+$ZIP = Join-Path $ROOT "dist\sayo-$VERSION-windows-x64.zip"
 if (Test-Path $ZIP) { Remove-Item $ZIP -Force }
 Compress-Archive -Path $OUT -DestinationPath $ZIP -CompressionLevel Optimal
 

@@ -15,18 +15,18 @@ def test_alias_correction(tmp_path):
 
 def test_replacement_and_english_typo(tmp_path):
     s = Storage(tmp_path / "t.db")
-    s.add_term("Saylo", [], "轻述")
+    s.add_term("sayo", [], "轻述")
     s.add_term("sherpa-onnx", ["sherpa onx"], "")
     d = PersonalDictionary(s.terms())
-    assert "轻述" in d.correct("打开 Saylo 设置")
+    assert "轻述" in d.correct("打开 sayo 设置")
     assert "sherpa-onnx" in d.correct("使用 sherpa onx 推理")
     s.close()
 
 
 def test_hotwords():
     d = PersonalDictionary([{"term": "张伟", "aliases": "", "replacement": ""},
-                            {"term": "Saylo", "aliases": "", "replacement": ""}])
+                            {"term": "sayo", "aliases": "", "replacement": ""}])
     assert "张伟" in d.hotwords()
     hotwords = build_hotwords(d.hotwords())
     assert hotwords is not None
-    assert "张 伟" in hotwords and "SAYLO" in hotwords
+    assert "张 伟" in hotwords and "SAYO" in hotwords

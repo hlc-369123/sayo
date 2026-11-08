@@ -140,7 +140,7 @@ class HistoryWindow(QWidget):
             self.reload()
 
     def export_json(self):
-        path, _ = QFileDialog.getSaveFileName(self, "导出到本机", "saylo-history.json", "JSON (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "导出到本机", "sayo-history.json", "JSON (*.json)")
         if not path:
             return
         with open(path, "w", encoding="utf-8") as f:

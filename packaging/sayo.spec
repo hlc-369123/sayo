@@ -9,7 +9,7 @@ from PyInstaller.utils.hooks import collect_all
 ROOT = Path(os.path.abspath(SPECPATH)).parent
 IS_MAC = sys.platform == "darwin"
 IS_WIN = sys.platform == "win32"
-DEBUG_CONSOLE = os.environ.get("SAYLO_DEBUG_CONSOLE", "0") == "1"
+DEBUG_CONSOLE = os.environ.get("SAYO_DEBUG_CONSOLE", "0") == "1"
 
 ICON = ROOT / "assets" / ("icon.icns" if IS_MAC else "icon.ico" if IS_WIN else "icon.png")
 if not ICON.exists():
@@ -76,7 +76,7 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=None)
 exe = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
-    name="Saylo",
+    name="sayo",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -92,18 +92,18 @@ exe = EXE(
 
 coll = COLLECT(
     exe, a.binaries, a.zipfiles, a.datas,
-    strip=False, upx=False, upx_exclude=[], name="Saylo",
+    strip=False, upx=False, upx_exclude=[], name="sayo",
 )
 
 if IS_MAC:
     app = BUNDLE(
         coll,
-        name="轻述 Saylo.app",
+        name="轻述 sayo.app",
         icon=str(ICON),
-        bundle_identifier="local.saylo.desktop",
+        bundle_identifier="local.sayo.desktop",
         info_plist={
-            "CFBundleName": "轻述 Saylo",
-            "CFBundleDisplayName": "轻述 Saylo",
+            "CFBundleName": "轻述 sayo",
+            "CFBundleDisplayName": "轻述 sayo",
             "CFBundleShortVersionString": "1.0.0",
             "CFBundleVersion": "1.0.0",
             "LSMinimumSystemVersion": "11.0",

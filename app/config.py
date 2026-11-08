@@ -10,8 +10,8 @@ import os
 import sys
 from pathlib import Path
 
-APP_NAME = "轻述 Saylo"
-APP_ID = "Saylo"
+APP_NAME = "轻述 sayo"
+APP_ID = "sayo"
 APP_VERSION = "1.0.0"
 SAMPLE_RATE = 16000  # SenseVoice / Silero VAD 均要求 16 kHz 单声道
 CHANNELS = 1
@@ -45,14 +45,14 @@ def resource_root() -> Path:
 
 
 def models_dir() -> Path:
-    override = os.environ.get("SAYLO_MODELS")
+    override = os.environ.get("SAYO_MODELS")
     if override:
         return Path(override).expanduser()
     return resource_root() / "models"
 
 
 def user_data_dir() -> Path:
-    override = os.environ.get("SAYLO_DATA")
+    override = os.environ.get("SAYO_DATA")
     if override:
         p = Path(override).expanduser()
     elif sys.platform == "darwin":
@@ -71,7 +71,7 @@ def logs_dir() -> Path:
     return p
 
 
-DB_PATH = user_data_dir() / "saylo.db"
+DB_PATH = user_data_dir() / "sayo.db"
 SETTINGS_PATH = user_data_dir() / "settings.json"
 AUDIO_DIR = user_data_dir() / "audio"
 

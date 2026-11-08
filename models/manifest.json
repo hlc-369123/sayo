@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "app": "轻述 Saylo",
+  "app": "轻述 sayo",
   "note": "模型随安装包离线分发；目标机器运行时不需要下载任何文件。校验和用于安装后完整性自检。",
   "source": {
     "sensevoice": "k2-fsa/sherpa-onnx releases / hf-mirror csukuangfj 镜像（原模型 iic/SenseVoiceSmall，Apache-2.0）",

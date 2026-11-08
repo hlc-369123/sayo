@@ -18,33 +18,33 @@ QT_QPA_PLATFORM=offscreen "$VENV/bin/python" scripts/make_icon.py
 
 echo "=== 3/5 单元测试 ==="
 PYTEST_TMP="$(mktemp -d)"
-SAYLO_DATA=/tmp/qt-build-test "$VENV/bin/python" -m pytest -q tests \
+SAYO_DATA=/tmp/qt-build-test "$VENV/bin/python" -m pytest -q tests \
   --basetemp="$PYTEST_TMP" -p no:cacheprovider
 
 echo "=== 4/5 PyInstaller 打包 ==="
 "$VENV/bin/python" -m PyInstaller --noconfirm \
   --distpath "$ROOT/dist" --workpath "$ROOT/build" \
-  packaging/saylo.spec
+  packaging/sayo.spec
 
 echo "=== 5/5 生成离线 tar.gz / 桌面入口 ==="
-OUT="$ROOT/dist/Saylo"
-DESKTOP="$ROOT/dist/Saylo.desktop"
+OUT="$ROOT/dist/sayo"
+DESKTOP="$ROOT/dist/sayo.desktop"
 cat > "$DESKTOP" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=轻述 Saylo
+Name=轻述 sayo
 Comment=全离线 AI 语音听写键盘
-Exec=Saylo
+Exec=sayo
 Icon=icon
 Categories=Utility;Accessibility;
 Terminal=false
 EOF
-tar -czf "$ROOT/dist/Saylo-$VERSION-linux-x64.tar.gz" -C "$ROOT/dist" Saylo Saylo.desktop
+tar -czf "$ROOT/dist/sayo-$VERSION-linux-x64.tar.gz" -C "$ROOT/dist" sayo sayo.desktop
 
 if command -v appimagetool >/dev/null 2>&1; then
   echo "检测到 appimagetool，可进一步生成 AppImage（离线单文件）"
 else
   echo "未检测到 appimagetool，已提供解压即用的 tar.gz"
 fi
-ls -lh "$ROOT/dist/Saylo-$VERSION-linux-x64.tar.gz"
-echo "离线安装：把 tar.gz 复制到目标机器解压，运行 ./Saylo/Saylo 即可，无需 sudo、无需联网。"
+ls -lh "$ROOT/dist/sayo-$VERSION-linux-x64.tar.gz"
+echo "离线安装：把 tar.gz 复制到目标机器解压，运行 ./sayo/sayo 即可，无需 sudo、无需联网。"
