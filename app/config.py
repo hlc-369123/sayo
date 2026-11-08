@@ -108,7 +108,8 @@ DEFAULT_SETTINGS: dict = {
     "smart_output_when_unknown": "paste",  # 焦点无法判断时：paste（默认，保证「说了就出字」）/ clipboard（保守，只复制需手动 ⌘V）
     "first_run_done": False,  # 首次启动弹出「怎么用」引导
     "theme": "aurora",  # 内置主题 key，见 app/ui/themes.py THEMES（默认极光：文字+曲线无底板）
-    "overlay_style": "classic",  # 浮层样式：classic（原样式，文字/曲线两窗）/ pill（单条胶囊，简洁风）
+    "overlay_style": "pill",  # 浮层样式：pill（单条胶囊，简洁风，默认）/ classic（原样式，文字/曲线两窗）
+    "overlay_default_migrated": False,  # 一次性迁移标记：旧 classic 默认已升级为 pill
     "interaction_sound": True,  # 交互声音：开始/结束听写的提示音（ 原声）
     "ax_guide_auto": True,  # 辅助功能未授权时，启动后自动弹出授权引导窗口
     # ---- 文本润色（全部本地规则，可叠加本地 LLM）----
@@ -204,6 +205,12 @@ class Settings:
         # 不再强制改主题（保留用户当时的视觉选择）。
         if "overlay_style" not in self._data:
             self._data["overlay_style"] = DEFAULT_SETTINGS["overlay_style"]
+            self.save()
+        # 一次性迁移：上一版默认是 classic，升级后改为 pill 默认（用户此后手动选回 classic 不会被翻回）。
+        if (self._data.get("overlay_style") == "classic"
+                and not self._data.get("overlay_default_migrated")):
+            self._data["overlay_style"] = "pill"
+            self._data["overlay_default_migrated"] = True
             self.save()
 
     @staticmethod

@@ -5,7 +5,7 @@ import threading
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QGroupBox, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QGroupBox, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from ..config import APP_NAME
@@ -21,8 +21,9 @@ class QuickStartWindow(QWidget):
         self.settings = settings
         self.probe = probe
         self.setWindowTitle(f"{APP_NAME} · 怎么用")
-        # 不锁死高度：内容（三个步骤卡片 + 按钮）较多，固定高度会裁掉底部按钮
-        self.setMinimumSize(560, 540)
+        # 内容较多：用滚动区承载中间内容，底部「开始使用」按钮固定可见，绝不裁切
+        self.setMinimumSize(580, 560)
+        self.resize(600, 620)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 18, 22, 16)
         lay.setSpacing(10)
@@ -33,6 +34,15 @@ class QuickStartWindow(QWidget):
         intro = QLabel("在任意应用中按快捷键说话，语音在本机变成文字并写入光标处。全程离线，无需账号。")
         intro.setWordWrap(True)
         lay.addWidget(intro)
+
+        # 中间内容放进滚动区
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        content = QWidget()
+        cv = QVBoxLayout(content)
+        cv.setContentsMargins(2, 2, 2, 2)
+        cv.setSpacing(10)
 
         # 第一步：权限
         box1 = QGroupBox("1 · 本机授权（麦克风 / 辅助功能）")
@@ -45,7 +55,7 @@ class QuickStartWindow(QWidget):
         btn_perm.clicked.connect(self._request_permissions)
         row.addWidget(btn_perm)
         v1.addLayout(row)
-        lay.addWidget(box1)
+        cv.addWidget(box1)
 
         # 第二步：操作
         box2 = QGroupBox("2 · 听写")
@@ -60,7 +70,7 @@ class QuickStartWindow(QWidget):
             "「快捷键没反应？诊断 / 修复…」查看是否被其他应用占用了组合键。")
         step2.setWordWrap(True)
         v2.addWidget(step2)
-        lay.addWidget(box2)
+        cv.addWidget(box2)
 
         # 第三步：结果去向与浮层
         box3 = QGroupBox("3 · 结果去哪了 / 屏幕上看到什么")
@@ -70,19 +80,23 @@ class QuickStartWindow(QWidget):
             "· 光标不在输入框里：只放进剪贴板，不模拟按键（按 ⌘V 自己粘）。\n"
             "· 微信等应用不暴露焦点控件时，默认也只放剪贴板；可在设置 → 常规 → "
             "「焦点无法判断时」改成自动粘贴。若辅助功能未授权，一律只写剪贴板。\n"
-            "· 录音时屏幕顶部中央有两个彼此独立的透明窗口：上面只有一行实时识别文字"
-            "（后面说的话会回头修正前面显示的字），下面只有 1~4 条随音量变化的曲线；"
-            "切换应用、切换桌面、进入全屏都不会消失，也不会挡住鼠标点击。")
+            "· 录音时屏幕顶部中央有一个小巧的胶囊浮层：左 × 取消、中间实时文字、"
+            "右 ✓ 确认；下面有一条随音量变化的波形。切换应用、切换桌面、进入全屏都不会消失，"
+            "也不会挡住鼠标点击。")
         step3.setWordWrap(True)
         v3.addWidget(step3)
-        lay.addWidget(box3)
+        cv.addWidget(box3)
 
         self.lb_test = QLabel("")
         self.lb_test.setWordWrap(True)
-        lay.addWidget(self.lb_test)
+        cv.addWidget(self.lb_test)
         btn_test = QPushButton("不用麦克风，先用内置语音样本试一次识别")
         btn_test.clicked.connect(self._test)
-        lay.addWidget(btn_test)
+        cv.addWidget(btn_test)
+        cv.addStretch(1)
+
+        scroll.setWidget(content)
+        lay.addWidget(scroll, 1)
 
         btn_close = QPushButton("开始使用")
         btn_close.setDefault(True)

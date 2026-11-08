@@ -16,8 +16,28 @@ import subprocess
 import sys
 from pathlib import Path
 
-_SOUNDS_DIR = Path(__file__).resolve().parent.parent / "assets" / "sounds"
 _enabled = True
+
+
+def _sounds_dir() -> Path:
+    """定位 assets/sounds 目录，兼容开发环境与被 PyInstaller 打包后的运行时。
+
+    开发环境：app/core/sound.py → 项目根/assets/sounds
+    打包环境：sys._MEIPASS/assets/sounds
+    """
+    # 1) PyInstaller 打包后，资源随包放在 _MEIPASS 下
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        cand = Path(sys._MEIPASS) / "assets" / "sounds"
+        if cand.exists():
+            return cand
+    # 2) 开发环境：从本文件向上三级到项目根
+    here = Path(__file__).resolve().parent          # app/core
+    for depth in (2, 3, 1):                         # app/core -> app -> 根
+        cand = here.parents[depth - 1] / "assets" / "sounds"
+        if cand.exists():
+            return cand
+    # 3) 兜底：仍返回最可能的位置（便于报错时定位）
+    return Path(__file__).resolve().parent.parent.parent / "assets" / "sounds"
 
 
 def set_enabled(value: bool) -> None:
@@ -33,7 +53,7 @@ def is_enabled() -> bool:
 def _play(name: str) -> None:
     if not _enabled:
         return
-    path = _SOUNDS_DIR / name
+    path = _sounds_dir() / name
     if not path.exists():
         return
     try:

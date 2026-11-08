@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
-    QSizePolicy, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
-    QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+    QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSizePolicy, QSlider,
+    QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from ..config import (
@@ -109,14 +109,14 @@ class SettingsWindow(QWidget):
         f.addRow("Ask / 编辑快捷键", self.ed_hotkey_ask)
         f.addRow(QLabel("格式示例：cmd+shift+space、cmd+shift+e、ctrl+alt+d"),
                  QLabel("系统级热键，无需输入监控授权；保存后立即重新注册"))
-        f.addRow("", self.ck_ptt)
+        f.addRow(self.ck_ptt)
         f.addRow("文字输出方式", self.cb_inject)
-        f.addRow("", self.ck_restore)
-        f.addRow("", self.ck_offline)
-        f.addRow("", self.ck_login)
-        f.addRow("", self.ck_smart)
+        f.addRow(self.ck_restore)
+        f.addRow(self.ck_offline)
+        f.addRow(self.ck_login)
+        f.addRow(self.ck_smart)
         f.addRow("焦点无法判断时", self.cb_unknown)
-        f.addRow("", self.ck_live)
+        f.addRow(self.ck_live)
         f.addRow("界面主题", self.cb_theme)
         self.cb_overlay_style = QComboBox()
         self.cb_overlay_style.addItems(["classic", "pill"])
@@ -129,7 +129,7 @@ class SettingsWindow(QWidget):
         f.addRow("浮层样式", self.cb_overlay_style)
         self.ck_sound = QCheckBox("交互声音：开始 / 结束听写的提示音（ 原声）")
         self.ck_sound.setChecked(bool(s.get("interaction_sound", True)))
-        f.addRow("", self.ck_sound)
+        f.addRow(self.ck_sound)
         self.tabs.addTab(w, "常规")
 
     def _preview_theme(self):
@@ -196,15 +196,21 @@ class SettingsWindow(QWidget):
         f.addRow("推理后端（GPU）", self.cb_accel)
         f.addRow("权重精度", self.cb_precision)
         f.addRow("灵敏度档位", self.cb_sensitivity)
-        f.addRow("", self.ck_recheck)
+        f.addRow(self.ck_recheck)
         f.addRow("本机加速状态", self.lb_accel)
         f.addRow("推理线程数", self.sp_threads)
-        f.addRow("", self.ck_vad)
-        f.addRow("VAD 灵敏度阈值", self.sl_threshold)
-        f.addRow("", self.lb_threshold)
+        f.addRow(self.ck_vad)
+        # VAD 阈值：滑块与数值并排，避免数值掉到下一行
+        vad_row = QWidget()
+        vad_h = QHBoxLayout(vad_row)
+        vad_h.setContentsMargins(0, 0, 0, 0)
+        vad_h.addWidget(self.sl_threshold)
+        vad_h.addWidget(self.lb_threshold)
+        vad_h.addStretch(1)
+        f.addRow("VAD 灵敏度阈值", vad_row)
         f.addRow("静音判定（秒）", self.sp_silence)
         f.addRow("说完自动结束（秒，0=关闭）", self.sp_autostop)
-        f.addRow("", self.ck_agc)
+        f.addRow(self.ck_agc)
         f.addRow("单次最长录音（秒）", self.sp_max)
 
         buttons = QHBoxLayout()
@@ -240,15 +246,22 @@ class SettingsWindow(QWidget):
         fl.addRow("翻译模式目标语言", self.ed_target)
         v.addWidget(box2)
 
-        box3 = QGroupBox("智能整理与本地大模型（GGUF，完全本机推理）\n"
-                         "整理只纠错、通顺、分点，内容全保留；总结在菜单栏「总结最近一次听写」单独触发")
+        box3 = QGroupBox("智能整理与本地大模型（GGUF，完全本机推理）")
         fl3 = QFormLayout(box3)
+        intro = QLabel("整理只纠错、通顺、分点，内容全保留；总结在菜单栏「总结最近一次听写」单独触发")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#8A94A8;")
+        intro.setMinimumWidth(360)
+        fl3.addRow(intro)
         self.ck_organize = QCheckBox(
             "智能整理：修正错别字、理顺语句、自动分点 —— 只去口头禅和改口，"
             "保留全部内容不做摘要删减（输出明显变短会自动重试或回退）")
         self.ck_organize.setChecked(bool(self.settings.get("organize_llm", True)))
         self.lb_llm_status = QLabel()
         self.lb_llm_status.setWordWrap(True)
+        # 多行说明：约束宽度并允许纵向扩展，避免 QFormLayout 行高计算不足导致「字叠字」
+        self.lb_llm_status.setMinimumWidth(360)
+        self.lb_llm_status.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
         self.ck_llm = QCheckBox("启用本地 LLM（深度改写 / 翻译 / 问答 / 一键总结）")
         self.ck_llm.setChecked(bool(self.settings.get("llm_enabled", False)))
         self.ed_llm_path = QLineEdit(self.settings.get("llm_model_path", ""))
@@ -379,10 +392,27 @@ class SettingsWindow(QWidget):
         from ..core.recorder import Recorder
         try:
             devs = Recorder.devices()
-            text = "\n".join(f"[{d['index']}] {d['name']} ({d['channels']} ch)" for d in devs) or "未发现输入设备"
         except Exception as exc:
-            text = str(exc)
-        QMessageBox.information(self, "本机麦克风设备", text)
+            devs = None
+            err = str(exc)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("本机麦克风设备")
+        dlg.setMinimumWidth(440)
+        dlg.setWindowModality(Qt.ApplicationModal)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel("选择默认麦克风后，听写会优先使用该设备；不指定则使用系统默认输入。"));
+        if devs is None:
+            v.addWidget(QLabel(f"读取设备失败：{err}"))
+        elif not devs:
+            v.addWidget(QLabel("未发现输入设备"))
+        else:
+            lst = QListWidget()
+            for d in devs:
+                item = QListWidgetItem(f"[{d['index']}]  {d['name']}   ·   {d['channels']} 声道")
+                lst.addItem(item)
+            v.addWidget(lst)
+        v.addWidget(QDialogButtonBox(QDialogButtonBox.Ok))
+        dlg.exec()
 
     def _browse_llm(self):
         p, _ = QFileDialog.getOpenFileName(self, "选择本地 GGUF 模型", "", "GGUF (*.gguf)")

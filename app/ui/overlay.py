@@ -28,12 +28,12 @@ TEXT_HEIGHT = 52
 WAVE_HEIGHT = 74
 BAND_COUNT = 28
 
-# ---- 胶囊浮层（pill 样式，简洁风单条）常量 ----
-PILL_W = 720
-PILL_H = 72
-PILL_PAD = 22
-PILL_BTN_R = 14
-PILL_LOGO = 26
+# ---- 胶囊浮层（pill 样式，简洁风单条）常量：小巧、清晰 ----
+PILL_W = 430
+PILL_H = 46
+PILL_PAD = 15
+PILL_BTN_R = 11
+PILL_LOGO = 20
 PILL_BANDS = 7
 
 # NSWindowCollectionBehavior：所有 Space + 不参与窗口循环 + 固定 + 可作为全屏辅助窗口
@@ -514,11 +514,19 @@ class _PillWindow(_FloatingWindow):
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        # 胶囊底：淡紫灰渐变
+
+        # 柔和投影：三层偏移圆角矩形，保证在任何背景上都清晰可见
+        for off, alpha in ((3, 38), (2, 26), (1, 16)):
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, alpha))
+            p.drawRoundedRect(0, off, PILL_W, PILL_H,
+                              PILL_H / 2, PILL_H / 2)
+
+        # 胶囊底：清晰可辨的薰衣草紫灰渐变（非浅白，避免看不清）
         grad = QLinearGradient(0, 0, PILL_W, PILL_H)
-        grad.setColorAt(0, QColor("#ECEAF5"))
-        grad.setColorAt(1, QColor("#DEDBEC"))
-        p.setPen(Qt.NoPen)
+        grad.setColorAt(0, QColor("#D9D4F0"))
+        grad.setColorAt(1, QColor("#C3BCE2"))
+        p.setPen(QPen(QColor("#A89FCF"), 1.5))
         p.setBrush(QBrush(grad))
         p.drawRoundedRect(0, 0, PILL_W, PILL_H, PILL_H / 2, PILL_H / 2)
 
@@ -531,7 +539,7 @@ class _PillWindow(_FloatingWindow):
         lg.setColorAt(0, QColor("#4F8BFF"))
         lg.setColorAt(1, QColor("#8B6BFF"))
         f = QFont()
-        f.setPointSize(20)
+        f.setPointSize(15)
         f.setWeight(QFont.Bold)
         p.setFont(f)
         p.setPen(Qt.NoPen)
@@ -541,10 +549,10 @@ class _PillWindow(_FloatingWindow):
         # 文字
         text = self._text or self._status
         if text:
-            if len(text) > 42:
-                text = "…" + text[-41:]
+            if len(text) > 30:
+                text = "…" + text[-29:]
             f = QFont()
-            f.setPointSize(17)
+            f.setPointSize(13)
             f.setWeight(QFont.Medium)
             p.setFont(f)
             fm = p.fontMetrics()
@@ -554,7 +562,7 @@ class _PillWindow(_FloatingWindow):
                 text = text[:-2] + "…"
                 tw = fm.horizontalAdvance(text)
             tx = self._text_left + max(0, (maxw - tw) // 2)
-            p.setPen(QColor("#2B2B33"))
+            p.setPen(QColor("#26222E"))
             p.setBrush(Qt.NoBrush)
             p.drawText(int(tx), 0, int(maxw), PILL_H,
                        Qt.AlignVCenter | Qt.AlignLeft, text)

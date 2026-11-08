@@ -602,14 +602,17 @@ def run_gui(settings: Settings) -> int:
     session = AppSession(settings)
     ctrl = Controller(session)
 
-    # 图标：直接用品牌图标源图（用户提供），不重绘；缺失时回退为纯色圆角块
-    icon_path = resource_root() / "assets" / "icon.png"
+    # 菜单栏（托盘）图标：必须用白色单色模板图，才会在菜单栏里显示为白色。
+    # 用抠好的白色 S（icon-menubar.png）；缺失时回退为纯白圆角块。
+    icon_path = resource_root() / "assets" / "icon-menubar.png"
     pix = QPixmap(str(icon_path))
     if pix.isNull():
         pix = QPixmap(64, 64)
-        pix.fill(QColor("#4F8BFF"))
+        pix.fill(QColor("#FFFFFF"))
     else:
         pix = pix.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    tray_icon = QIcon(pix)
+    tray_icon.setIsTemplate(True)  # macOS 模板图：随菜单栏明暗自动显示为白色/黑色
 
     overlay = RecordingOverlay(settings.get("theme", DEFAULT_THEME),
                                settings.get("overlay_style", "classic"))
@@ -810,7 +813,7 @@ def run_gui(settings: Settings) -> int:
     session.sig_error.connect(on_error, Qt.QueuedConnection)
 
     # ------------------------------------------------------------ 菜单栏
-    tray = QSystemTrayIcon(QIcon(pix))
+    tray = QSystemTrayIcon(tray_icon)
     tray.setToolTip(f"{APP_NAME} v{APP_VERSION} · 完全离线")
     menu = QMenu()
     act_toggle = QAction("开始 / 结束听写", menu)
