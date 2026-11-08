@@ -31,6 +31,9 @@ class Theme:
     # 浮层曲线：由浅入深的 1~4 条
     waves: tuple[QColor, ...]
     glow: tuple[QColor, ...] = field(default=())
+    # 浮层底板（毛玻璃胶囊）：空字符串 = 无底板；8 位 hex 可带透明度
+    panel_bg: str = ""
+    panel_border: str = ""
     # 界面配色
     ui_bg: str = "#0F1218"
     ui_panel: str = "#161C24"
@@ -56,7 +59,13 @@ def _t(key: str, name: str, *, live: str, final: str, stroke: str,
 
 
 THEMES: dict[str, Theme] = {t.key: t for t in (
-    _t("aurora", "极光（默认）",
+    _t("frost", "浅白毛玻璃（默认）",
+       live="#1A1A1A", final="#1A1A1A", stroke="#FFFFFF",
+       waves=("#3B7BFF", "#8A5CF6", "#7DD3FC", "#A78BFA"),
+       ui_bg="#F2F3F7", ui_panel="#FFFFFF", ui_fg="#1A1A1A",
+       ui_muted="#8A8FA0", ui_accent="#4F8BFF", ui_border="#E4E6EC",
+       panel_bg="#C8F6F7FB", panel_border="#66FFFFFF"),
+    _t("aurora", "极光",
        live="#F8FBFF", final="#D6E2F0", stroke="#060A12",
        waves=("#7DD3FC", "#60A5FA", "#8BA2FD", "#A78BFA"),
        ui_bg="#0F1218", ui_panel="#161C24", ui_fg="#E7EDF6",
@@ -98,7 +107,7 @@ THEMES: dict[str, Theme] = {t.key: t for t in (
        ui_muted="#8398B8", ui_accent="#38BDF8", ui_border="#1D2B46"),
 )}
 
-DEFAULT_THEME = "aurora"
+DEFAULT_THEME = "frost"
 
 
 def get_theme(key: str | None) -> Theme:

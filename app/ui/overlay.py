@@ -177,6 +177,12 @@ class _TextWindow(_FloatingWindow):
         if not text:
             p.end()
             return
+        # 毛玻璃底板：浅白圆角胶囊（仅当主题定义了底板色）
+        if self.theme.panel_bg:
+            p.setPen(QPen(QColor(self.theme.panel_border), 1) if self.theme.panel_border else Qt.NoPen)
+            p.setBrush(QColor(self.theme.panel_bg))
+            r = self.height() * 0.5
+            p.drawRoundedRect(0, 0, self.width(), self.height(), r, r)
         if len(text) > 48:
             text = "…" + text[-47:]
 
@@ -283,6 +289,12 @@ class _WaveWindow(_FloatingWindow):
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        # 毛玻璃底板：浅白圆角胶囊
+        if self.theme.panel_bg:
+            p.setPen(QPen(QColor(self.theme.panel_border), 1) if self.theme.panel_border else Qt.NoPen)
+            p.setBrush(QColor(self.theme.panel_bg))
+            r = self.height() * 0.5
+            p.drawRoundedRect(0, 0, self.width(), self.height(), r, r)
         level = self._level
         count = 1 + min(3, int(level * 4.0))
         cy = self.height() / 2.0
