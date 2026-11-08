@@ -27,6 +27,8 @@ MODE="${1:-}"
 
 COMMITS_FILE="$(mktemp -t sayo-commits)"
 PUSH_ERR="$(mktemp -t sayo-push-err)"
+# 本地断点：网络抖动导致 git ls-remote 查不到远程 HEAD 时，仍能接着上次继续
+PROGRESS="$(git rev-parse --git-dir)/sayo-push-progress"
 trap 'rm -f "$COMMITS_FILE" "$PUSH_ERR"' EXIT
 
 echo "──────── 1/4 本机与仓库信息 ────────"
@@ -84,24 +86,46 @@ fi
 # 按提交顺序逐个 fast-forward，把一次大上传拆成多次小上传。
 # 天然幂等：已在远程历史里的提交会被跳过，中途断了重跑可从断点继续。
 chunked_push() {
-  local remote_head c ok a label
-  remote_head="$(git ls-remote --heads origin main 2>/dev/null | awk '{print $1}')"
+  local remote_head done_sha c ok skip a label
+  done_sha="$(cat "$PROGRESS" 2>/dev/null || true)"
+  remote_head=""
+  for a in 1 2 3; do
+    remote_head="$(git ls-remote --heads origin main 2>/dev/null | awk '{print $1}')"
+    [ -n "$remote_head" ] && break
+  done
   git rev-list --reverse main > "$COMMITS_FILE"
   while read -r c; do
+    # 本地进度 + 远程 HEAD 双重跳过，任一即可
+    if [ -n "$done_sha" ] && git merge-base --is-ancestor "$c" "$done_sha" 2>/dev/null; then
+      continue
+    fi
     if [ -n "$remote_head" ] && git merge-base --is-ancestor "$c" "$remote_head" 2>/dev/null; then
+      printf '%s\n' "$c" > "$PROGRESS"
+      done_sha="$c"
       continue
     fi
     ok=0
+    skip=0
     for a in 1 2 3; do
       if git push --quiet origin "${c}:refs/heads/main" 2>"$PUSH_ERR"; then
         ok=1
         break
       fi
+      # 远程已包含该提交（多因上一次查询失败），直接跳过，不要死重试
+      if grep -qE 'non-fast-forward|rejected' "$PUSH_ERR"; then
+        skip=1
+        break
+      fi
     done
     label="$(git show -s --format='%h %s' "$c" | cut -c1-56)"
-    if [ "${ok}" = 1 ]; then
-      echo "  OK   $label"
-      remote_head="$c"
+    if [ "${ok}" = 1 ] || [ "${skip}" = 1 ]; then
+      if [ "${skip}" = 1 ]; then
+        echo "  SKIP $label（远程已包含）"
+      else
+        echo "  OK   $label"
+      fi
+      printf '%s\n' "$c" > "$PROGRESS"
+      done_sha="$c"
     else
       echo "  FAIL $label"
       head -3 "$PUSH_ERR" | sed 's/^/       /'
