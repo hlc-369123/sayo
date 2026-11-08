@@ -110,13 +110,15 @@ Python 解释器、推理库、Qt 都随 `.app` / EXE 打包。
 
 ### A. 拿到「安装包」（最省事，推荐普通用户）
 
-你拿到的是 `轻述 sayo.app` / `轻述 sayo-1.0.0-macos.zip` / `sayo-1.0.0-macos.dmg` / `sayo-1.0.0-macos.pkg`
-（或 Windows 的 ZIP / EXE、Linux 的 tar.gz）。**直接用，不需要开发环境。**
+推荐分发 **`轻述 sayo-1.0.0-macos.zip`**：**一个文件即完整交付**，解压后含
+`轻述 sayo.app`（应用）、`install_models.command`（首次下载模型）、`使用手册.md`（安装与使用说明）。
+其他形态：单独的 `.app` / `sayo-1.0.0-macos.dmg` / `.pkg`（Windows 的 ZIP / EXE、Linux 的 tar.gz）。
+**直接用，不需要开发环境。**
 
 > **GitHub 仓库只存源码**：`.app`、DMG、ZIP 等二进制产物在 `.gitignore` 中被忽略，不进仓库。
 > 官方安装包发布在 **Releases** 页面：<https://github.com/hlc-369123/sayo/releases>。
-> 安装包**不含模型**，压缩后约 200 MB；下载 zip 后双击解压，把「轻述 sayo」拖进「应用程序」，
-> 校验值见同名 `.sha256` 文件。模型单独下载，见下面「第 0 步」。
+> 安装包**不含模型**，zip 约 62 MB；下载后双击解压，把「轻述 sayo」拖进「应用程序」，
+> 校验值见同名 `.sha256` 文件。模型用 zip 里附带的脚本下载，见下面「第 0 步」。
 
 - **macOS**
   - DMG：双击挂载 → 把「轻述 sayo」拖进「应用程序」。
@@ -129,7 +131,7 @@ Python 解释器、推理库、Qt 都随 `.app` / EXE 打包。
 
 #### 第 0 步：下载语音模型（仅第一次，需联网）
 
-双击 Release 附带的 `install_models.command`（或仓库里的 `scripts/install_models.command`），
+双击解压出来的 `install_models.command`（或仓库里的 `scripts/install_models.command`），
 它会把 int8 模型、词表、VAD 下载到 `~/Library/Application Support/sayo/models/` 并逐个校验 SHA-256，
 约 240 MB。想要 fp32 全精度：`./install_models.command --full`（再下约 940 MB）。
 
