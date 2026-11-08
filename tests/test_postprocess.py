@@ -15,6 +15,17 @@ def test_fillers_zh_en():
     assert "方案" in out
 
 
+def test_leading_filler_keeps_demonstratives():
+    """回归：句首的「这个 / 那个」是指示代词（这个东西 / 那个地方），不能当填充词删掉。"""
+    out, _ = remove_fillers("这个东西它能移动，然后它就能用了")
+    assert out.startswith("这个东西"), out
+    out2, _ = remove_fillers("那个地方我记得改过了。其实没改。")
+    assert out2.startswith("那个地方"), out2
+    # 「就是 / 然后 / 其实」等纯犹豫词在句首仍应被清理
+    out3, _ = remove_fillers("就是，我觉得还行")
+    assert out3 == "我觉得还行", out3
+
+
 def test_repetitions():
     out, _ = remove_repetitions("我我我想去 the the meeting，这个这个方案")
     assert "我我我" not in out

@@ -25,7 +25,11 @@ CN_FILLERS = [
     "那个那个", "这个这个", "你知道的", "怎么说呢", "就是说", "对吧", "是吧",
     "然后呢", "好吧", "其实吧", "怎么说", "我意思是", "额这个",
 ]
-CN_LEADING_FILLERS = ["那个", "就是", "然后", "所以说", "反正", "要不", "那么", "这个", "其实", "基本上"]
+# 句首填充词：仅删「没实义、只是开口犹豫」的词。
+# 注意： deliberately 不含「这个 / 那个」——它们是中文实义指示代词
+# （这个东西 / 那个地方），若在句首被删会吞掉真实内容（见 test_leading_filler_keeps_demonstratives）。
+# 真正的「那个，那个…」口吃式犹豫由 remove_repetitions 的「那个那个」规则处理。
+CN_LEADING_FILLERS = ["就是", "然后", "所以说", "反正", "要不", "那么", "其实", "基本上"]
 EN_FILLERS = [
     "um", "uh", "erm", "er", "hmm", "mm", "ah", "you know", "kind of", "sort of",
     "basically", "actually", "literally", "I guess", "right", "okay so", "well",
