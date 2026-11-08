@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# 轻述 sayo：一键诊断 GitHub 推送权限，自动挑可用通道，然后推送 main 与标签。
+# 轻述 sayo：一键诊断 GitHub 推送通道，自动挑可用通道，然后推送 main 与标签。
 #
 # 在「终端.app」里执行（不要用 IDE 内置终端）：
 #     cd "/Users/hlc/Documents/语言转文字输入" && bash scripts/push_github.sh
 # 只想诊断、不推送：
 #     bash scripts/push_github.sh --probe-only
 #
-# 说明：本机 ~/.ssh/id_ed25519.pub 已登记在 GitHub 账号 hlc-369123 上，
-# 所以「没有正确权限」通常是 22 端口被网络拦截，而不是密钥失效。
+# 注意：GitHub 对 `ssh -T git@github.com` 永远返回非零退出码，
+# 并把 "You've successfully authenticated" 当作**成功消息**打印。
+# 不能用 ssh -T 的退出码判断权限，必须用真实 git 协议（ls-remote）判断。
 set -u
 
 cd "$(dirname "$0")/.." || { echo "找不到项目目录"; exit 1; }
@@ -28,29 +29,47 @@ else
   echo "公钥指纹 : 未找到 ~/.ssh/id_ed25519.pub"
 fi
 
-ssh_ok() {
-  ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \
-      -T -p "$2" "git@$1" 2>&1 | grep -q "successfully authenticated"
+# 长一点的连接超时 + 保活，避免代理偶发掐断被误判成「认证失败」
+export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+
+# 用真实 git 协议探测：空仓库返回 0 且无输出；认证/连接失败返回非 0
+probe() {
+  local url="$1" out rc
+  out="$(git ls-remote "$url" 2>&1)"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "OK  $url"
+    return 0
+  fi
+  echo "--  $url 不通（rc=$rc），原始报错："
+  printf '%s\n' "$out" | head -8 | sed 's/^/    /'
+  return 1
 }
 
-echo "──────── 2/4 探测 SSH 通道 ────────"
+echo "──────── 2/4 探测可用通道（每条最多 2 次，代理偶发掐断会自动重试） ────────"
 CHANNEL=""
-if ssh_ok github.com 22; then
-  echo "OK  22 端口可认证"; CHANNEL="$SSH22"
-else
-  echo "--  22 端口失败，原始报错："
-  ssh -o BatchMode=yes -o ConnectTimeout=8 -T git@github.com 2>&1 | head -8 | sed 's/^/    /'
-  if ssh_ok ssh.github.com 443; then
-    echo "OK  443 端口可认证（走 ssh.github.com）"; CHANNEL="$SSH443"
-  else
-    echo "--  443 端口失败，原始报错："
-    ssh -o BatchMode=yes -o ConnectTimeout=8 -T -p 443 git@ssh.github.com 2>&1 | head -8 | sed 's/^/    /'
-  fi
-fi
+for url in "$SSH22" "$SSH443"; do
+  for attempt in 1 2; do
+    if probe "$url"; then
+      CHANNEL="$url"
+      break 2
+    fi
+    [ "$attempt" -lt 2 ] && echo "   第 $attempt 次未通，稍后重试…"
+  done
+done
 
 if [ -z "$CHANNEL" ]; then
   echo ""
-  echo "❌ 两条 SSH 通道都认证失败。改用 HTTPS + Personal Access Token："
+  echo "── 补充判断：SSH 认证本身是否正常 ──"
+  auth="$(ssh -o BatchMode=yes -o ConnectTimeout=15 -T git@github.com 2>&1)"
+  printf '%s\n' "$auth" | head -4 | sed 's/^/    /'
+  if printf '%s' "$auth" | grep -q "successfully authenticated"; then
+    echo "   ↑ 这行是【认证成功】，GitHub 不提供 shell 属正常现象。"
+    echo "   说明密钥没问题，是代理/网络在 git 数据阶段掐断了连接。"
+    echo "   建议：关闭代理或 VPN、换手机热点后重跑本脚本。"
+  fi
+  echo ""
+  echo "❌ 两条 SSH 通道都不可用。兜底方案：HTTPS + Personal Access Token"
   echo "   1) 浏览器打开 https://github.com/settings/tokens/new"
   echo "      选 classic token，勾选 repo，生成后复制（只显示一次）"
   echo "   2) 终端执行："
@@ -61,7 +80,7 @@ if [ -z "$CHANNEL" ]; then
   echo "      # 用户名填 hlc-369123，密码粘贴刚才的 token"
   echo "      git push --tags"
   echo ""
-  echo "把上面两段「原始报错」一起发回来，可以进一步定位。"
+  echo "把上面所有「原始报错」一起发回来，可以进一步定位。"
   exit 1
 fi
 
@@ -71,18 +90,15 @@ if [ "${1:-}" = "--probe-only" ]; then
 fi
 
 echo "──────── 3/4 设置远程并推送 ────────"
-# 避免首次连接被 known_hosts 交互提示卡住（"Host key verification failed" 也会报成没有权限）
-export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o ServerAliveInterval=20"
 git remote set-url origin "$CHANNEL"
 echo "远程已设为: $CHANNEL"
 
 if ! git push -u origin main; then
   echo ""
-  echo "❌ 代码推送失败。若报错是连接被重置 / broken pipe，多为网络对大流量上传不友好，可重试："
+  echo "❌ 代码推送失败（原始报错见上）。通道探测是通的，多为上传阶段被网络掐断，可重试："
   echo "      git push -u origin main"
-  echo "   或先单独推一次空提交试探通道，再推全量："
-  echo "      git config http.postBuffer 524288000"
-  echo "   也可把 dist/sayo-full.bundle（27MB 仓库完整备份）先发过去应急。"
+  echo "   若反复失败，关闭代理 / 换网络后重跑：bash scripts/push_github.sh"
+  echo "   应急：dist/sayo-full.bundle 是完整仓库备份，可直接传给对方 clone。"
   exit 1
 fi
 
