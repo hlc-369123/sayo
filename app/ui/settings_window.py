@@ -381,17 +381,19 @@ class SettingsWindow(QWidget):
         # 全部用 QVBoxLayout 全宽纵排：QFormLayout 对「自动换行的多行标签」行高
         # 计算不准，会出现「字叠字」；复选框长文案单行也会被右缘裁掉。
         bl.setSpacing(8)
-        intro = QLabel("整理只纠错、通顺、分点，内容全保留；总结在菜单栏「总结最近一次听写」单独触发")
+        intro = QLabel("默认不参与每次听写（实测多等 1~3 秒且可能改坏原文）；"
+                       "需要精修时到「本机历史 → 重新整理」手动触发")
         intro.setWordWrap(True)
         intro.setAlignment(Qt.AlignVCenter)
         intro.setStyleSheet("color:#8A94A8;")
         bl.addWidget(intro)
         # 复选框文案只留标题，长说明拆成独立换行标签
-        self.ck_organize = QCheckBox("智能整理：修正错别字、理顺语句、自动分点")
-        self.ck_organize.setChecked(bool(self.settings.get("organize_llm", True)))
+        self.ck_organize = QCheckBox("每次听写都做智能整理（默认关）")
+        self.ck_organize.setChecked(bool(self.settings.get("organize_llm", False)))
         bl.addWidget(self.ck_organize)
         organize_hint = QLabel(
-            "只去口头禅和改口，保留全部内容不做摘要删减；输出明显变短会自动重试或回退。")
+            "只去口头禅和改口，保留全部内容不做摘要删减；输出明显变短会自动重试或回退。"
+            "开启后每次口述都会等本机模型整理完才出字。")
         organize_hint.setWordWrap(True)
         organize_hint.setAlignment(Qt.AlignVCenter)
         organize_hint.setStyleSheet("color:#8A94A8; padding-left:26px;")

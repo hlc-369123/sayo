@@ -59,6 +59,31 @@ def test_mixed_spacing():
     assert "使用 Python 开发 ASR 模型" in out
 
 
+def test_cn_digits_never_get_spaced():
+    """回归（评审 §3.1）：中文数字混排不插空格，英文技术名词保留空格。"""
+    out, _ = normalize_spacing("我们下午 3 点开会，目标达到 95 %")
+    assert "下午3点" in out, out
+    assert "达到95%" in out, out
+    # 中文↔字母仍补空格，英文 token 尾数字后接汉字也补
+    en, _ = normalize_spacing("使用Python和PySide6开发")
+    assert "使用 Python 和 PySide6 开发" in en, en
+    # 「macOS 26 开发」里数字后的合理空格不能被误删
+    keep, _ = normalize_spacing("支持 macOS 26 开发")
+    assert keep == "支持 macOS 26 开发", keep
+
+
+def test_modal_particle_keeps_comma_not_period():
+    """回归（评审 §3.2）：语气词后的话题延续只能补逗号，不能强行断句。"""
+    out, _ = restore_sentence_punctuation("我觉得吧这件事情可以再看看")
+    assert "我觉得吧，这件" in out, out
+    assert "吧。" not in out, out
+    out2, _ = restore_sentence_punctuation("去公园吧然后吃午饭")
+    assert "吧，然后" in out2, out2
+    # 明确另起一句时仍应断句（用户黄金样例依赖这一点）
+    out3, _ = restore_sentence_punctuation("再往上迭代吧计划是准备做成")
+    assert "吧。计划" in out3, out3
+
+
 def test_full_pipeline_is_deterministic():
     p = TextPolisher({}, None)
     r = p.polish("嗯，那个，我我我想说的是，第一，确认需求。第二，写方案。", tone="none")

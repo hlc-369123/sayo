@@ -71,3 +71,34 @@ def test_empty_audio_returns_warning(tmp_path):
     r = p.process(np.zeros(100, dtype=np.float32))
     assert r.text == "" and r.warnings
     storage.close()
+
+
+# ---------------------------------------------------------------- 主路径不含 LLM（评审 P0）
+def test_default_dictation_never_calls_llm(tmp_path, monkeypatch):
+    """默认听写主路径不再同步等待本机大模型，也不会被模型改写。"""
+    s, storage, p = make_pipeline(tmp_path)
+    called = {"n": 0}
+
+    def spy(text, hotwords=None):
+        called["n"] += 1
+        return "被模型改坏的文本", "local-llm"
+
+    monkeypatch.setattr(p.llm, "organize", spy)
+    r = p.process(np.zeros(1600, dtype=np.float32),
+                  context=AppContext(app_name="邮件", bundle_id="com.apple.mail"))
+    assert called["n"] == 0, "默认主路径不应调用大模型整理"
+    assert "被模型改坏的文本" not in r.text
+    storage.close()
+
+
+def test_explicit_organize_llm_still_available(tmp_path, monkeypatch):
+    """用户显式开启「每次听写都整理」时，能力仍完整保留。"""
+    s, storage, p = make_pipeline(tmp_path, {"organize_llm": True})
+    monkeypatch.setattr(
+        p.llm, "organize",
+        lambda text, hotwords=None: (text + "（已整理）", "local-llm"))
+    r = p.process(np.zeros(1600, dtype=np.float32),
+                  context=AppContext(app_name="邮件", bundle_id="com.apple.mail"))
+    assert "（已整理）" in r.text
+    assert "本机大模型整理" in r.applied
+    storage.close()

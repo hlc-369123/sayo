@@ -164,9 +164,13 @@ DEFAULT_SETTINGS: dict = {
     "history_retention_days": 365,
     "llm_enabled": True,
     "llm_model_path": "",
-    # 智能整理（完全离线）：本机 GGUF 模型修正错别字、理顺语句、按「第一点/第二点」重组
-    "organize_llm": True,
+    # 智能整理（完全离线）：本机 GGUF 模型修正错别字、理顺语句、按「第一点/第二点」重组。
+    # 默认关闭：实测每次听写都跑模型会带来 0.2~3.5s 等待，且会把本已正确的文本改坏
+    # （数字 3→三、输出整理标签、擅自改词）。需要时由用户在「历史记录 → 重新整理」显式触发，
+    # 或在下方勾选框手动开启「每次听写都整理」。
+    "organize_llm": False,
     "organize_min_chars": 10,  # 短于此长度的结果不做大模型整理，避免过度改写
+    "organize_default_migrated_v2": False,  # 一次性迁移标记，防止升级用户仍被默认值拖慢
     "offline_lock": True,  # True = 主动封锁所有出站 socket（进程级硬约束）
     "launch_at_login": False,
 }
@@ -213,16 +217,24 @@ class Settings:
                 pass  # 损坏时回退默认值，不联网、不崩溃
 
     def _migrate(self, saved_keys: set) -> None:
-        """旧版本升级：新增能力只提升、不回退用户的显式选择。
+        """旧版本升级：补齐新增键，并对默认值变更做一次性迁移。
 
         判断依据是**用户配置文件里是否写过 organize_llm**（合并默认值后
-        新键总是存在，不能用它判断）。旧配置里的 llm_enabled=False 只是
-        旧版本的默认值，不视为用户显式关闭，随本次升级一并开启；
-        此后用户在设置里的任何修改都会写入文件、不再被迁移覆盖。
+        新键总是存在，不能用它判断）。迁移写入后，用户在设置里的任何修改
+        都会写入文件、不再被覆盖。
         """
         if "organize_llm" not in saved_keys:
             self._data["organize_llm"] = DEFAULT_SETTINGS["organize_llm"]
             self._data["llm_enabled"] = DEFAULT_SETTINGS["llm_enabled"]
+            self.save()
+        # 一次性迁移：本机四组实测（ASR 72ms / 规则 0.1ms / 模型整理 0.2~3.5s）
+        # 且模型会把原本正确的文本改坏，故默认不再让 LLM 参与每次听写。
+        # 仅改 DEFAULT_SETTINGS 对升级用户无效——他们的 settings.json 里早已存了
+        # organize_llm=true，必须靠这个带标记的一次性迁移翻转，且只翻一次；
+        # 之后用户若主动在设置里重新勾选，会被完整尊重。
+        if not self._data.get("organize_default_migrated_v2"):
+            self._data["organize_llm"] = False
+            self._data["organize_default_migrated_v2"] = True
             self.save()
         # 旧配置若停留在最早的「极光 aurora」且无 overlay_style 键，补上默认浮层样式，
         # 不再强制改主题（保留用户当时的视觉选择）。

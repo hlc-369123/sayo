@@ -119,7 +119,7 @@ class DictationPipeline:
         # 智能整理（听写模式可选）：本机大模型纠错、理顺语句、按顺序词重组结构。
         # 整理 ≠ 总结：LLM 输出被长度守卫判定为「过度删减」时（fallback），
         # 保留规则润色文本并明确提示，绝不静默丢内容。
-        if mode == "dictate" and bool(settings.get("organize_llm", True)) \
+        if mode == "dictate" and bool(settings.get("organize_llm", False)) \
                 and len(result.text.strip()) >= int(settings.get("organize_min_chars", 10)):
             organized, source = self.llm.organize(
                 result.text, hotwords=self.dictionary.hotwords())
@@ -129,6 +129,9 @@ class DictationPipeline:
             elif source == "fallback":
                 result.warnings.append(
                     "智能整理两次输出均删减过多，已保留信息完整的润色原文")
+            elif source == "guard-rejected":
+                result.warnings.append(
+                    "智能整理改动了数字、英文或否定词，已拒绝该结果并保留润色原文")
             elif source == "unavailable":
                 result.warnings.append(
                     "智能整理需要本机 GGUF 模型（放置路径见 设置 → 常规 → 整理状态）；"

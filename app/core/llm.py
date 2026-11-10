@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 
@@ -175,6 +176,8 @@ class LocalTextEngine:
         "当它仅作话题标记（如『X 的话，Y』『今天的话』『但现在的话』）且无实义时应去掉，"
         "并连同其后不必要的逗号一起去掉（如『但现在的话，还有』→『但现在还有』『今天的话我们』→『今天我们』）；\n"
         "    - 被重复读出的『还/要』等助词也去掉；\n"
+        # 注：两行 few-shot 结构对模型稳定性更好；模型若复读「整理：」标签，
+        # 由 _clean_organize_output 在输出侧剥离，不写进提示词以免干扰模型。
         "  · 冗余字处理示例（务必照此风格执行）：\n"
         "      原稿：「后面如果有其他的形式的话再往上迭代吧，但现在的话还有几个模块要补一补」\n"
         "      整理：「后面如果有其他形式的话，再往上迭代吧。但现在还有几个模块要补一补」\n"
@@ -219,12 +222,52 @@ class LocalTextEngine:
         short = cls._effective_chars(src) < 30
         return (0.75, 0.65) if short else (0.60, 0.50)
 
+    # 模型模仿 few-shot 示例时会把「整理：」「输出：」这类标签带进正文，
+    # 直接写给用户的文档里就成了脏字符（实测样本 02 出现过「整理：\n」）。
+    _OUTPUT_LABEL_RE = re.compile(
+        r"^\s*(?:整理(?:后|结果|稿|文本|正文|内容)?|输出|结果|原文整理|"
+        r"润色(?:后|结果)?|最终(?:文本|结果|输出)?)\s*[:：]\s*")
+    # 受保护 token：数字（含小数、百分号）与英文/技术名词。只比对「是否变少」，
+    # 因此正常的标点、空格、语气词调整不会误报；数字被改写成汉字会立刻抓到。
+    _PROTECTED_TOKEN_RE = re.compile(r"\d+(?:\.\d+)?%?|[A-Za-z][A-Za-z0-9._-]*")
+    _PROTECTED_WORDS = ("不能", "不会", "没有", "不是", "不再", "从未", "必须", "至少", "全部")
+
+    @classmethod
+    def _clean_organize_output(cls, text: str) -> str:
+        """剥掉输出里模仿示例带出的标签行与包裹全文的引号。"""
+        s = (text or "").strip()
+        for _ in range(3):
+            new = cls._OUTPUT_LABEL_RE.sub("", s, count=1)
+            new = re.sub(r"^\s*\n", "", new)  # 标签独占一行时连同换行去掉
+            if new == s:
+                break
+            s = new.strip()
+        if len(s) >= 2 and s[0] in "\"'「『“‘" and s[-1] in "\"'」』”’":
+            s = s[1:-1].strip()
+        return s
+
+    @classmethod
+    def _protected_counts(cls, text: str) -> Counter:
+        counts = Counter(t.lower() for t in cls._PROTECTED_TOKEN_RE.findall(text or ""))
+        for w in cls._PROTECTED_WORDS:
+            n = (text or "").count(w)
+            if n:
+                counts[w] = n
+        return counts
+
+    @classmethod
+    def _protect_violated(cls, src: str, out: str) -> bool:
+        """受保护内容只能原样保留、不能变少；其余部分允许有限改写。"""
+        a, b = cls._protected_counts(src), cls._protected_counts(out)
+        return any(b[t] < n for t, n in a.items())
+
     def organize(self, text: str, hotwords: list[str] | None = None) -> tuple[str, str]:
         """整理口述稿：纠错 + 通顺 + 分点，信息量与原稿一致。
 
         内置长度守卫：输出有效内容 < 原文 60% 视为「被总结过头」，自动重试一次；
         重试后仍 < 50% 则返回 ("", "fallback")，由上层保留润色原文，绝不静默丢内容。
-        返回 (结果, 来源标记)：local-llm / unavailable / error / fallback。
+        返回 (结果, 来源标记)：local-llm / unavailable / error / fallback /
+        guard-rejected（精修改动了受保护的数字/英文/否定词，已拒绝该结果）。
         """
         if not text.strip():
             return "", "empty"
@@ -235,16 +278,20 @@ class LocalTextEngine:
             words = "、".join(dict.fromkeys(hotwords))[:300]
             prompt += f"\n\n【专有名词表】（出现时必须按此写法输出）：{words}"
         try:
-            out = self._generate(self._ORGANIZE_SYSTEM, prompt, max_tokens=1536,
-                                 temperature=0.0)
+            out = self._clean_organize_output(self._generate(
+                self._ORGANIZE_SYSTEM, prompt, max_tokens=1536, temperature=0.0))
             first_floor, retry_floor = self._floors(text)
             if self._over_compressed(text, out, floor=first_floor):
-                retry = self._generate(
+                retry = self._clean_organize_output(self._generate(
                     self._ORGANIZE_SYSTEM + "\n重要：" + self._RETRY_SUFFIX,
-                    prompt, max_tokens=1536, temperature=0.0)
+                    prompt, max_tokens=1536, temperature=0.0))
                 if self._over_compressed(text, retry, floor=retry_floor):
                     return "", "fallback"  # 两次都过度删减：宁可不整理，也不丢内容
-                return retry, "local-llm"
+                out = retry
+            # 强制质量守卫：数字、英文术语、否定词不得被改写或删除。
+            # 命中则整条精修作废，上层保留规则润色原文，绝不静默写入被改坏的文本。
+            if self._protect_violated(text, out):
+                return "", "guard-rejected"
             return out, "local-llm"
         except Exception as exc:
             return f"[本地模型整理失败：{exc}]", "error"

@@ -835,8 +835,29 @@ def run_gui(settings: Settings) -> int:
         # 激活应用是异步的：先恢复用户原来的应用，稍等再检测焦点并粘贴。
         # 少了这一步，⌘V 会发给被切到前台的本应用，输入框里什么都不会出现。
         # 识别结果直接写入输入框，屏幕上不留任何文字。
+        t_emit = time.perf_counter()
         ctrl._restore_front()
-        QTimer.singleShot(140, lambda: ctrl.on_result(result))
+
+        def _paste_and_measure():
+            t_paste = time.perf_counter()
+            try:
+                ctrl.on_result(result)
+            finally:
+                # T1/T2/T3 分口径埋点（评审 §7）：三种耗时分开记，避免把
+                # 「模型处理」与「等待目标应用焦点 / 粘贴」混成一个数字。
+                # 注：这里测到的是「粘贴指令返回」，并非目标应用真正渲染出文字，
+                # 后者无跨应用可靠回执，需人工实测补充。
+                t_done = time.perf_counter()
+                log_note(
+                    f"T1_asr={result.duration_ms}ms "
+                    f"T2_emit_to_paste={(t_paste - t_emit) * 1000:.0f}ms "
+                    f"T3_paste_call={(t_done - t_paste) * 1000:.0f}ms "
+                    f"total_from_emit={(t_done - t_emit) * 1000:.0f}ms "
+                    f"chars={len(result.text)} "
+                    f"llm_in_path={'本机大模型整理' in result.applied}",
+                    "latency.log")
+
+        QTimer.singleShot(140, _paste_and_measure)
 
     def on_error(msg):
         overlay.set_state("error", msg[:42])

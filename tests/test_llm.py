@@ -73,7 +73,9 @@ def test_disabled_engine_is_never_available(monkeypatch, tmp_path):
 def test_config_defaults_exist():
     assert "organize_llm" in DEFAULT_SETTINGS
     assert "organize_min_chars" in DEFAULT_SETTINGS
-    assert DEFAULT_SETTINGS["organize_llm"] is True
+    # 实测：每次听写跑模型多等 0.2~3.5s 且会改坏原本正确的文本 → 默认不参与主路径
+    assert DEFAULT_SETTINGS["organize_llm"] is False
+    assert "organize_default_migrated_v2" in DEFAULT_SETTINGS
 
 
 # ---------------------------------------------------------------- 长度守卫
@@ -120,7 +122,7 @@ def test_organize_short_text_uses_stricter_floor(monkeypatch):
         calls["n"] += 1
         if calls["n"] == 1:
             return "3 点开会。"  # 丢掉「下午」等词，有效字数 64% < 75%
-        return "今天天气很好，我们下午三点开会。"
+        return "今天天气很好，我们下午3点开会。"
 
     monkeypatch.setattr(eng, "_generate", fake_generate)
     out, source = eng.organize(src)
@@ -162,6 +164,53 @@ def test_organize_prompt_handles_spurious_periods_and_fillers():
     assert "话题标记" in system, "应说明『的话』作话题标记时去掉"
     assert "形容词" in system and "领属" in system, "应说明形容词/领属修饰的『的』必须保留"
     assert "如果" in system, "应说明『如果…的话』固定条件搭配保留『的话』"
+
+
+# ---------------------------------------------------------------- 输出卫生与文本保护
+def test_clean_organize_output_strips_label_prefix():
+    """回归：模型模仿 few-shot 示例输出的「整理：」标签不能写进用户文档。"""
+    E = LocalTextEngine
+    assert E._clean_organize_output("整理：\n我觉得方案可以。") == "我觉得方案可以。"
+    assert E._clean_organize_output("结果：甲项内容") == "甲项内容"
+    assert E._clean_organize_output("「今天天气很好。」") == "今天天气很好。"
+    assert E._clean_organize_output("今天天气很好。") == "今天天气很好。"
+
+
+def test_protect_violated_catches_rewrites_but_allows_punctuation():
+    """受保护 token 变少即拒绝；正常标点/空格/用词调整不误报。"""
+    E = LocalTextEngine
+    assert E._protect_violated("下午3点开会", "下午三点开会") is True
+    assert E._protect_violated("达到95%", "达到百分之九十五") is True
+    assert E._protect_violated("使用 PySide6 开发", "使用 PySide 开发") is True
+    assert E._protect_violated("这个不能做", "这个可以做") is True
+    assert E._protect_violated("下午3点开会", "下午3点，开会。") is False
+    assert E._protect_violated("预算是100元", "预算为100元") is False
+
+
+def test_organize_rejects_number_rewrite_and_strips_label(monkeypatch):
+    eng = _engine()
+    monkeypatch.setattr(eng, "available", lambda: True)
+    src = "今天天气很好，我们下午3点开会，会议大概要开一个小时。"
+    monkeypatch.setattr(
+        eng, "_generate",
+        lambda s, u, max_tokens=512, temperature=0.2:
+        "整理：\n今天天气很好，我们下午三点开会，会议大概要开一个小时。")
+    out, source = eng.organize(src)
+    assert source == "guard-rejected" and out == "", (out, source)
+
+    # 标签被剥离但内容未改动 → 正常返回清洗后的正文
+    monkeypatch.setattr(
+        eng, "_generate",
+        lambda s, u, max_tokens=512, temperature=0.2: "整理：\n" + src)
+    out2, source2 = eng.organize(src)
+    assert source2 == "local-llm" and out2 == src, (out2, source2)
+
+
+def test_organize_prompt_fewshot_labels_are_cleanable():
+    """两行 few-shot 更稳；模型若复读『整理：』标签，清洗层必须剥干净。"""
+    assert "整理：「" in LocalTextEngine._ORGANIZE_SYSTEM  # 保留有效的两行示例结构
+    assert LocalTextEngine._clean_organize_output("整理：「甲项内容」") == "甲项内容"
+    assert LocalTextEngine._clean_organize_output("整理：\n甲项内容。") == "甲项内容。"
 
 
 # ---------------------------------------------------------------- 真实模型回归
