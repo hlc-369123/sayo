@@ -192,6 +192,57 @@ def normalize_punctuation(text: str, chinese: bool) -> tuple[str, bool]:
     return text, text != original
 
 
+# 话语连接词：连接分句，不构成新句子，其前补逗号
+_CN_CONNECTIVES = [
+    "但是", "但", "所以", "因此", "因而", "而且", "并且", "另外", "此外",
+    "最后", "首先", "其次", "然后", "接着", "同时", "否则", "不过", "然而",
+    "其实", "总之", "比如", "例如", "如果", "因为", "虽然", "即使", "只要",
+    "一旦", "假如", "换句话说", "也就是说", "与此同时",
+]
+# 句末语气词：其后还有内容 → 视为一句结束，补句号
+_CN_SENT_END = "吧啦咯嘛哦耶哈嘞呗哟"
+# 句末语气词：其后还有内容 → 补问号
+_CN_QUEST_END = "吗呢"
+
+
+def restore_sentence_punctuation(text: str) -> tuple[str, bool]:
+    """按中文语义重新断句与标点。
+
+    背景：即便引擎已去掉 VAD 切片间的虚假句号，拼接后的文本仍是「流水句」，
+    缺少符合语义的逗号与句号。本步骤依据话语连接词与句末语气词补回自然停顿：
+      · 连接词（但是 / 所以 / 如果 …）前补逗号 —— 它们连接分句，而非另起一句
+      · 「的话 / 的时候 / 的情况下 / 的前提下」后补逗号
+      · 句末语气词（吧 / 啦 / 吗 / 呢 …）后若还有内容，补句号 / 问号，标志一句结束
+      · 末尾统一补一个句号
+    不做「每小句都加句号」式处理，避免通篇都是「。」。
+    """
+    original = text
+    s = text.strip()
+    if not s:
+        return text, False
+
+    # 1) 连接词前补逗号（不在句首、且前面不是标点）
+    for c in sorted(_CN_CONNECTIVES, key=len, reverse=True):
+        s = re.sub(r"(?<!^)(?<![，。！？；：、,.!?;:！？])\s*" + re.escape(c), "，" + c, s)
+
+    # 2) 「的话 / 的时候 / 的情况下 / 的前提下」后补逗号
+    s = re.sub(r"(的话|的时候|的情况下|的前提下)(?=[^\s，。！？；：、,.!?;:])", r"\1，", s)
+
+    # 3) 句末语气词后若还有内容，补句号 / 问号
+    s = re.sub(r"([" + _CN_SENT_END + r"])(?=[^\s，。！？；：、,.!?;:])", r"\1。", s)
+    s = re.sub(r"([" + _CN_QUEST_END + r"])(?=[^\s，。！？；：、,.!?;:])", r"\1？", s)
+
+    # 4) 末尾补句号
+    if s and s[-1] not in "。！？；：、,.!?;:…\n":
+        s += "。"
+
+    # 5) 清理：去掉「，。」之类、合并重复标点、清掉标点前空格
+    s = re.sub(r"，\s*[。！？]", lambda m: m.group(0)[-1], s)
+    s = re.sub(r"([，。！？；：])\1+", r"\1", s)
+    s = re.sub(r"[ \t]+([，。！？；：、])", r"\1", s)
+    return s, s != original
+
+
 def apply_tone(text: str, tone: str) -> tuple[str, bool]:
     if tone in ("", "none", "casual", "code", "auto"):
         return text, False
@@ -245,6 +296,9 @@ class TextPolisher:
 
         if tone not in ("code",):
             if self._enabled("punctuation"):
+                text, changed = restore_sentence_punctuation(text)
+                if changed:
+                    applied.append("语义断句")
                 text, changed = normalize_punctuation(text, chinese)
                 if changed:
                     applied.append("标点规范化")

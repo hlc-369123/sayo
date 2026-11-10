@@ -2,6 +2,7 @@
 from app.core.postprocess import (
     TextPolisher, format_lists, normalize_spacing, remove_fillers,
     remove_repetitions, remove_self_corrections, restore_spoken_punctuation,
+    restore_sentence_punctuation,
 )
 
 
@@ -65,3 +66,36 @@ def test_full_pipeline_is_deterministic():
     assert "我我我" not in r.text
     assert "1." in r.text
     assert r.applied  # 至少记录了一条改写
+
+
+def test_vad_segments_no_spurious_periods():
+    """回归：VAD 把一句话切成多段、每段都带句号时，不应通篇都是「。」。
+
+    模拟引擎已去掉切片间虚假句号后的拼接结果（流水句），语义断句应只保留
+    真正的句末句号（语气词后 / 整段末尾），其余用逗号分隔。
+    """
+    joined = ("主要现在做的都是这种图片的视频后面如果有其他的形式的话"
+              "再往上迭代吧计划是准备给它做成至少自动化率达到 95%，"
+              "不需要人怎么操作但现在的话还有几个模块还要再补一补")
+    out, _ = restore_sentence_punctuation(joined)
+    # 通篇句号的反例：每两三个字就一个「。」——不允许出现「X。Y」把短语当句
+    assert "主要现在做的都是" in out, out
+    assert "再往上迭代吧。" in out, out
+    assert out.endswith("。"), out
+    # 句中真实句号只能出现在句末语气词之后或结尾，数量应远小于「每段一个」
+    assert out.count("。") <= 2, out  # 仅「吧」后一处 + 结尾一处
+
+
+def test_semantic_punctuation_connectives_and_particles():
+    """连接词前补逗号；「的话」后补逗号；句末语气词后补句号/问号。"""
+    # 连接词 + 语气词
+    out, _ = restore_sentence_punctuation("今天天气很好所以我们去公园吧明天再写代码")
+    assert "，所以" in out, out
+    assert "去公园吧。" in out, out
+    # 问号语气词
+    out2, _ = restore_sentence_punctuation("你知道这个方法吗我觉得不太行")
+    assert "你知道这个方法吗？" in out2, out2
+    # 「的话」后逗号
+    out3, _ = restore_sentence_punctuation("如果下雨的话我们就改期")
+    assert "如果下雨的话，" in out3, out3
+

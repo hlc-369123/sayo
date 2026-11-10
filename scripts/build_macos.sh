@@ -44,6 +44,9 @@ if [[ ! -d "$APP" ]]; then
   exit 1
 fi
 
+# 让 Spotlight 永久跳过 dist 构建目录（否则搜索会同时出现「已安装版」和「构建版」两个副本）
+touch "$ROOT/dist/.metadata_never_index"
+
 echo "=== 5/6 本地签名与自检 ==="
 codesign --force --deep --sign - "$APP" || echo "（ad-hoc 签名失败，仍可用右键→打开方式启动）"
 # 构建机若本地有 models/，用 SAYO_MODELS 指过去做一次完整自检；

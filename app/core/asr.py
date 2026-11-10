@@ -455,6 +455,15 @@ class ASREngine:
             if text:
                 texts.append(text)
 
+        # 关键修复：SenseVoice 会对每个 VAD 切片单独加句号，导致一句话被切成
+        # 多段、拼接后通篇都是「。」。去掉「非最后一段」切片尾部的句末标点
+        # （。！？!?，保留逗号等句内标点），让后续按语义重新断句，而不是把
+        # 每个切片都当成一句独立的话。
+        if len(texts) > 1:
+            _sf = "。！？!?"
+            for i in range(len(texts) - 1):
+                texts[i] = re.sub(r"[" + re.escape(_sf) + r"]+$", "", texts[i]).rstrip()
+
         joiner = " " if self.model_name == "whisper" else ""
         raw = joiner.join(texts)
         raw = re.sub(r"\s+", " ", raw).strip()
