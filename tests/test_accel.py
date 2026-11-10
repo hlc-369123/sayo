@@ -123,7 +123,11 @@ def _force_speech_gate(monkeypatch):
 
 
 def test_quiet_segment_recheck_recovers_lost_text(monkeypatch, tmp_path):
-    """高灵敏档下，低电平片段首次解码为空时，二次解码结果应被采用。"""
+    """高灵敏档下，低电平片段首次解码为空时，二次解码结果应被采用。
+
+    注：≤30s 语音现走整段一次性解码（recheck 不再逐段触发），recheck 仅保留给
+    >30s 超长语音。本测试用 35s 音频命中该路径以继续覆盖 recheck 逻辑。
+    """
     e = ASREngine(Path(tmp_path), {
         "model": "sensevoice", "precision": "int8", "sensitivity": "high",
         "gpu_recheck": True, "vad_enabled": False,
@@ -132,7 +136,7 @@ def test_quiet_segment_recheck_recovers_lost_text(monkeypatch, tmp_path):
     monkeypatch.setattr(e, "ensure_loaded", lambda: None)
     e.precision_actual = "int8"
     e._recognizer = object()
-    quiet = (np.random.default_rng(1).uniform(-0.01, 0.01, 16000 * 2)).astype(np.float32)
+    quiet = (np.random.default_rng(1).uniform(-0.01, 0.01, 16000 * 35)).astype(np.float32)
     monkeypatch.setattr(e, "split", lambda samples, use_vad=True, noise_floor=0.0: [samples])
     responses = iter(["", "今天下午三点开会"])
 

@@ -889,19 +889,22 @@ def run_gui(settings: Settings) -> int:
 
     def on_state(state, text):
         overlay.set_state(state, text)
-        # 语音输入时静音其他活动音频（可在设置关闭）：进入录音静音，结束/取消恢复
+        entering = state == "recording" and _prev_state[0] != "recording"
+        leaving = _prev_state[0] == "recording" and state != "recording"
+        # 语音输入时静音其他活动音频（可在设置关闭）：进入录音静音，结束/取消恢复。
+        # 必须等「开始提示音」播完后再静音系统输出，否则设备级静音会把本应用自己的
+        # 开始音一起掐掉（用户只听到结束音、误以为开始音跑到结束去了）。
+        # 蓝牙耳机输入/输出同一设备时跳过静音，否则会把输入流一起掐断（实测变全零）。
         if bool(settings.get("mute_others_during_input", False)):
-            if state == "recording" and _prev_state[0] != "recording":
-                # 蓝牙耳机的输入/输出是同一个设备：给它设 output mute 会把
-                # 输入流一起掐断（实测从断续爆音变成全零）。这种情况跳过静音。
-                if not Recorder.shares_output_device():
-                    mute_system_output(True)
-            elif _prev_state[0] == "recording" and state != "recording":
+            if entering and not Recorder.shares_output_device():
+                QTimer.singleShot(320, lambda: mute_system_output(True))
+            elif leaving:
                 mute_system_output(False)
-        # 交互声音：进入 recording 播放开始音，离开 recording 播放结束音
-        if state == "recording" and _prev_state[0] != "recording":
+        # 交互声音：进入 recording 播放开始音，离开 recording 播放结束音。
+        # 结束音要先解除静音再播（上面 leaving 分支已先 unmute），保证能听到。
+        if entering:
             play_start()
-        elif _prev_state[0] == "recording" and state != "recording":
+        elif leaving:
             play_end()
         _prev_state[0] = state
 

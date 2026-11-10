@@ -480,14 +480,39 @@ class ASREngine:
                 model=self.model_name, backend=self.backend.key,
                 precision=self.precision_actual, elapsed_ms=int((time.time() - t0) * 1000),
                 warnings=["语音过短或过于嘈杂，未形成可识别片段"])
-        texts: list[str] = []
-        tail = np.zeros(int(SAMPLE_RATE * 0.6), dtype=np.float32)  # 尾部补零，防止末字丢失
-        # 社区 VAD 实践（faster-whisper / whisper.cpp 的 speech_pad_ms）：
-        # 每个语音段前面补一段安静上下文，可明显减少句首字被吞掉。
-        head = np.zeros(int(SAMPLE_RATE * 0.20), dtype=np.float32)
-        lead = np.zeros(int(SAMPLE_RATE * 0.30), dtype=np.float32)  # 复核用更长的静音上下文
+
+        self.ensure_loaded()
+
+        head = np.zeros(int(SAMPLE_RATE * 0.20), dtype=np.float32)  # 段前补静音，减句首吞字
+        tail = np.zeros(int(SAMPLE_RATE * 0.60), dtype=np.float32)  # 尾部补零，防末字丢失
+        lead = np.zeros(int(SAMPLE_RATE * 0.30), dtype=np.float32)  # 复核用更长静音上下文
         long_tail = np.zeros(int(SAMPLE_RATE * 1.0), dtype=np.float32)
         rechecked = 0
+
+        # 关键修复：逐段解码会让 SenseVoice 在每个 VAD 切片尾部各自加句号、且长句 /
+        # 短停顿处丢失句内标点，最终拼出来要么「通篇句号」要么「一整段没标点」
+        # （实时预览是整段解码所以有标点，终稿反而没有，前后不一致）。
+        # 改成「把整段语音拼成一个整体一次性解码」：SenseVoice 拿到完整上下文，
+        # 标点与断句明显更稳。仅超长语音（>30s）退回逐段解码 + 低电平片段二次复核。
+        MAX_FULL = int(SAMPLE_RATE * 30)
+        speech = np.concatenate([np.asarray(s, dtype=np.float32) for s in segments])
+        if speech.size <= MAX_FULL:
+            raw = self._decode(np.concatenate([head, speech, tail]), hotwords)
+            # 单句解码极少出现散点句号；仍做兜底，避免个别碎片被切出多余标点
+            raw = _strip_spurious_periods(raw)
+            return ASRResult(
+                text=raw,
+                language=detect_language(raw),
+                segments=len(segments),
+                elapsed_ms=int((time.time() - t0) * 1000),
+                model=self.model_name,
+                backend=self.backend.key,
+                precision=self.precision_actual,
+                rechecked=0,
+            )
+
+        # 超长语音（>30s）：保留旧行为（逐段解码 + 低电平片段二次复核）
+        texts: list[str] = []
         for seg in segments:
             text = self._decode(np.concatenate([head, seg, tail]), hotwords)
             if self._needs_recheck(seg, text):
@@ -498,10 +523,7 @@ class ASREngine:
             if text:
                 texts.append(text)
 
-        # 关键修复：SenseVoice 会对每个 VAD 切片单独加句号，导致一句话被切成
-        # 多段、拼接后通篇都是「。」。去掉「非最后一段」切片尾部的句末标点
-        # （。！？!?，保留逗号等句内标点），让后续按语义重新断句，而不是把
-        # 每个切片都当成一句独立的话。
+        # 去掉「非最后一段」切片尾部的句末标点，避免拼接后通篇都是「。」
         if len(texts) > 1:
             _sf = "。！？!?"
             for i in range(len(texts) - 1):
