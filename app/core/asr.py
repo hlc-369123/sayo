@@ -67,6 +67,48 @@ def detect_language(text: str) -> str:
     return "zh" if cjk / max(1, cjk + latin) > 0.12 else "en"
 
 
+# 句末标点（含中英文），用于识别 SenseVoice 的「散点句号」
+_PUNCT_RUN = re.compile(r"([。！？!?]+)")
+
+
+def _strip_spurious_periods(text: str, min_periods: int = 4,
+                            max_avg_frag: int = 10) -> str:
+    """剥离 SenseVoice 在单切片内部撒的「散点句号」。
+
+    SenseVoice 偶尔会对每个短短语单独加句号（「主要现在。做的。都是…」），
+    早先的修复只处理了「多 VAD 切片边界」的句号，单切片内部的漏掉了。
+    这里仅在「明显过度断句」时介入：内部句末标点 ≥ min_periods 个，且内部片段
+    平均有效字数 < max_avg_frag —— 判定为模型过度断句，删掉这些内部标点，
+    仅保留最后一次句末标点，交给后续规则 / 本地 LLM 重新断句。
+    正常长句（标点少、片段长）完全不动，避免误并真实句子。
+    """
+    matches = list(_PUNCT_RUN.finditer(text))
+    if len(matches) < min_periods:
+        return text
+    internal_frags: list[int] = []
+    last = 0
+    for m in matches[:-1]:
+        frag = text[last:m.start()]
+        internal_frags.append(len(re.sub(r"\s", "", frag)))
+        last = m.end()
+    if not internal_frags:
+        return text
+    avg = sum(internal_frags) / len(internal_frags)
+    if avg > max_avg_frag:
+        return text  # 长片段为主，视为正常断句，不动
+    out: list[str] = []
+    last = 0
+    for i, m in enumerate(matches):
+        out.append(text[last:m.start()])
+        if i < len(matches) - 1:
+            pass  # 删掉内部句末标点
+        else:
+            out.append(m.group(1))  # 仅保留末次句末标点
+        last = m.end()
+    out.append(text[last:])
+    return "".join(out)
+
+
 def build_hotwords(terms: list[str], limit: int = 60) -> str | None:
     """把个人词典转成 sherpa-onnx 的热词偏置串（create_stream(hotwords=...)）。"""
     parts: list[str] = []
@@ -402,6 +444,7 @@ class ASREngine:
             force_speech=force)
         tail = np.zeros(int(SAMPLE_RATE * 0.45), dtype=np.float32)
         text = self._decode(np.concatenate([clean, tail]), hotwords)
+        text = _strip_spurious_periods(text)
         return ASRResult(
             text=text, language=detect_language(text), segments=1,
             elapsed_ms=int((time.time() - t0) * 1000), model=self.model_name,
@@ -467,6 +510,9 @@ class ASREngine:
         joiner = " " if self.model_name == "whisper" else ""
         raw = joiner.join(texts)
         raw = re.sub(r"\s+", " ", raw).strip()
+        # 止血：剥离 SenseVoice 在单切片内部撒的散点句号（「短语。短语。」），
+        # 仅保留末次句末标点，避免规则 / LLM 拿到一堆被句号切碎的碎片。
+        raw = _strip_spurious_periods(raw)
         return ASRResult(
             text=raw,
             language=detect_language(raw),

@@ -153,6 +153,13 @@ def test_organize_prompt_forbids_summarizing():
     assert "禁止省略" in system and "信息量必须与原稿完全一致" in system
 
 
+def test_organize_prompt_handles_spurious_periods_and_fillers():
+    """整理提示词需覆盖：合并识别误加的散点句号、删除冗余插入字（的/的话/还）。"""
+    system = LocalTextEngine._ORGANIZE_SYSTEM
+    assert "误加的句号" in system, "应提示合并短语后误加的句号"
+    assert "冗余字" in system, "应提示删除识别插入的冗余字"
+
+
 # ---------------------------------------------------------------- 一键总结
 def test_summarize_points_with_fake_llm(monkeypatch):
     eng = _engine()

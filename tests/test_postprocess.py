@@ -99,3 +99,43 @@ def test_semantic_punctuation_connectives_and_particles():
     out3, _ = restore_sentence_punctuation("如果下雨的话我们就改期")
     assert "如果下雨的话，" in out3, out3
 
+
+def test_strip_spurious_periods_over_punctuated():
+    """回归：SenseVoice 在单切片内部撒的散点句号应被剥离，仅保留末次。"""
+    from app.core.asr import _strip_spurious_periods
+    bad = ("主要现在。做的。都是这种图片的视频。后面如果有其他的。形式的话再往上迭代吧。"
+           "计划是准备给它做成。至少自动化率达到 95%，不需要人怎么操作。但现在的话还有。"
+           "几个模块还要再补一补。")
+    out = _strip_spurious_periods(bad)
+    assert out.count("。") == 1, out
+    assert "主要现在做的都是这种图片的视频" in out
+    assert out.endswith("几个模块还要再补一补。")
+
+
+def test_strip_spurious_periods_keeps_normal_sentences():
+    """回归：正常长句与少量独立短句不被误并。"""
+    from app.core.asr import _strip_spurious_periods
+    normal = "今天天气很好。我们去公园吧，然后吃午饭。"
+    assert _strip_spurious_periods(normal) == normal
+    three = "我来了。他走了。事情办完了。"
+    assert _strip_spurious_periods(three) == three
+
+
+def test_polish_reconstructs_user_golden_punctuation():
+    """回归：散点句号剥离后，规则兜底应还原出正确的逗号/分号/句号骨架。
+
+    规则不擅自删词，故原稿中识别插入的『的/的话/还』仍会保留；
+    删除冗余字是本地 LLM 整理层（organize）的职责，本测试只校验标点骨架。
+    """
+    from app.core.asr import _strip_spurious_periods
+    bad = ("主要现在。做的。都是这种图片的视频。后面如果有其他的。形式的话再往上迭代吧。"
+           "计划是准备给它做成。至少自动化率达到 95%，不需要人怎么操作。但现在的话还有。"
+           "几个模块还要再补一补。")
+    raw = _strip_spurious_periods(bad)
+    out, _ = restore_sentence_punctuation(raw)
+    assert "，后面如果有" in out, out
+    assert "再往上迭代吧。" in out, out
+    assert "；但" in out, out
+    assert out.endswith("。"), out
+    assert out.count("。") <= 2, out  # 仅「吧」后一处 + 结尾一处
+
