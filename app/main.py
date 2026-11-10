@@ -335,6 +335,25 @@ class Controller:
         self._ax_nudged = False  # 每次运行最多自动弹一次授权引导
         self._silent_retries = 0  # 录音流假死自动重试计数（最多一次，防死循环）
 
+        # 启动后在后台做一次输入设备健康探测：等用户按快捷键时结果已缓存，
+        # 不会给「按下 → 开始录音」引入等待。系统默认输入若是断流的蓝牙
+        # 链路 / 失效虚拟声卡，这里就能提前发现并准备好备用麦克风。
+        try:
+            import threading
+
+            def _warmup_input_probe():
+                try:
+                    _, note = self.recorder.auto_input_device()
+                    if note:
+                        log_note(f"输入设备自检：{note}")
+                except Exception:
+                    pass
+
+            threading.Thread(target=_warmup_input_probe, daemon=True,
+                             name="input-device-probe").start()
+        except Exception:
+            pass
+
     # ---- 焦点保护：开始听写时把前台交还给用户原来的应用，光标不会消失
     def _remember_front(self):
         self._front_pid = None
@@ -403,23 +422,24 @@ class Controller:
         if self._silent_retries < 1:
             self._silent_retries += 1
             self.session.sig_error.emit(
-                f"麦克风输入异常（{device_name}），正在自动重启音频流，请继续说话…")
+                f"麦克风输入异常（{device_name}），正在自动切换输入设备并重开音频流，请继续说话…")
             self.session.sig_command.emit("restart_recording")
         else:
-            msg = (f"麦克风没有声音（当前输入设备：{device_name}）。"
-                   "常见原因：蓝牙耳机已断开或被别的应用占用、系统输入音量为 0、"
-                   "默认输入设备不是您正在对着说话的那一个。"
-                   "请到 系统设置 → 声音 → 输入 检查后重新听写。")
+            msg = (f"麦克风始终没有声音（当前输入设备：{device_name}）。"
+                   "已尝试自动切换输入设备仍未恢复。常见原因：蓝牙耳机已断开、"
+                   "系统输入音量为 0、麦克风被别的应用独占。"
+                   "请到 系统设置 → 声音 → 输入 选择内置麦克风后重新听写。")
             self.session.sig_error.emit(msg)
             self.session.sig_command.emit("stop")
 
     def restart_recording(self) -> None:
-        """丢弃本次（静音）录音，立即重开麦克风流。"""
+        """丢弃本次（断流）录音，强制重探设备并重开麦克风流。"""
         self.live.stop()
         try:
             self.recorder.stop()
         except Exception:
             pass
+        Recorder.invalidate_device_cache()  # 重听一次，别继续沿用坏设备
         self.state = "idle"
         self.begin()
 
@@ -473,9 +493,14 @@ class Controller:
         self.state = "recording"
         # 状态里带上真实输入设备名：蓝牙耳机/内置麦切换时用户能立刻发现用错了麦
         device = getattr(self.recorder, "device_name", "")
+        note = getattr(self.recorder, "auto_device_note", "")
+        if note:
+            log_note(f"输入设备自检：{note}")
+        suffix = f" · {device}" if device and device != "未知设备" else ""
+        if note:
+            suffix += " · 已自动切换麦克风"
         self.session.sig_state.emit(
-            "recording", f"正在聆听…（{self.context.app_name or '当前应用'}）"
-                         + (f" · {device}" if device and device != "未知设备" else ""))
+            "recording", f"正在聆听…（{self.context.app_name or '当前应用'}）" + suffix)
         self.session.sig_mode.emit(mode)
         # 浮层显示后把前台交还原应用；用户点回输入框不会中断录音
         self.session.sig_command.emit("restore_front")
@@ -495,6 +520,7 @@ class Controller:
             return
         self.live.stop()  # 结束增量解码，避免与最终 fp32 识别争用
         audio = self.recorder.stop()
+        device_name = str(getattr(self.recorder, "device_name", "") or "")
         seconds = len(audio) / 16000
         audio_path = ""
         if self.settings.get("save_audio", False) and audio.size:
@@ -502,7 +528,7 @@ class Controller:
         self.state = "transcribing"
         self.session.sig_state.emit("transcribing", "本地识别与润色中…")
         mode, ctx = self.mode, self.context
-        self.executor.submit(self._work, audio, mode, ctx, seconds, audio_path)
+        self.executor.submit(self._work, audio, mode, ctx, seconds, audio_path, device_name)
 
     def cancel(self):
         """取消本次听写：停止录音并丢弃音频，不识别、不写入。"""
@@ -533,10 +559,11 @@ class Controller:
         elif self.state == "recording":
             self.stop()
 
-    def _work(self, audio, mode, ctx, seconds, audio_path):
+    def _work(self, audio, mode, ctx, seconds, audio_path, device_name=""):
         try:
             result = self.pipeline.process(
-                audio, mode=mode, context=ctx, audio_seconds=seconds, audio_path=audio_path
+                audio, mode=mode, context=ctx, audio_seconds=seconds,
+                audio_path=audio_path, device_name=device_name
             )
             self.session.sig_result.emit(result)
         except Exception as exc:
@@ -865,7 +892,10 @@ def run_gui(settings: Settings) -> int:
         # 语音输入时静音其他活动音频（可在设置关闭）：进入录音静音，结束/取消恢复
         if bool(settings.get("mute_others_during_input", False)):
             if state == "recording" and _prev_state[0] != "recording":
-                mute_system_output(True)
+                # 蓝牙耳机的输入/输出是同一个设备：给它设 output mute 会把
+                # 输入流一起掐断（实测从断续爆音变成全零）。这种情况跳过静音。
+                if not Recorder.shares_output_device():
+                    mute_system_output(True)
             elif _prev_state[0] == "recording" and state != "recording":
                 mute_system_output(False)
         # 交互声音：进入 recording 播放开始音，离开 recording 播放结束音

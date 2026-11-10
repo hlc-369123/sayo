@@ -66,7 +66,7 @@ class DictationPipeline:
         self.llm = LocalTextEngine(self.settings)
 
     @staticmethod
-    def _log_empty(audio, asr_result) -> None:
+    def _log_empty(audio, asr_result, device_name: str = "") -> None:
         """识别为空时落日志：记录音频电平与时长，用于定位「收不到声音」。
 
         区分两种根因：录音全零（音频流假死/设备断开）还是「有声音但模型没出字」
@@ -83,13 +83,15 @@ class DictationPipeline:
                 fh.write(
                     f"{time.strftime('%H:%M:%S')} 识别为空：时长={a.size / 16000:.2f}s "
                     f"RMS={rms:.5f} 峰值={peak:.4f} 样本数={a.size} "
+                    f"设备={device_name or '未知'} "
                     f"reason={getattr(asr_result, 'warnings', '')}\n")
         except Exception:
             pass
 
     def process(self, audio: np.ndarray, *, mode: str = "dictate",
                 context: AppContext | None = None,
-                audio_seconds: float = 0.0, audio_path: str = "") -> DictationResult:
+                audio_seconds: float = 0.0, audio_path: str = "",
+                device_name: str = "") -> DictationResult:
         t0 = time.time()
         ctx = context or AppContext()
         settings = self.settings
@@ -109,7 +111,7 @@ class DictationPipeline:
         )
         if not raw:
             result.warnings.append("未检测到有效语音，可在设置中降低 VAD 阈值或提高麦克风音量")
-            self._log_empty(audio, asr_result)
+            self._log_empty(audio, asr_result, device_name)
             return result
 
         polished = self.polisher.polish(raw, tone=tone)
