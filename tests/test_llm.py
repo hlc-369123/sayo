@@ -25,7 +25,7 @@ def test_organize_unavailable_without_model(monkeypatch):
 def test_organize_success_with_fake_llm(monkeypatch):
     eng = _engine()
     monkeypatch.setattr(eng, "available", lambda: True)
-    monkeypatch.setattr(eng, "_generate", lambda s, u, max_tokens=512: "1. 甲项内容\n2. 乙项内容")
+    monkeypatch.setattr(eng, "_generate", lambda s, u, max_tokens=512, temperature=0.2: "1. 甲项内容\n2. 乙项内容")
     out, source = eng.organize("第一点甲项内容第二点乙项内容")
     assert source == "local-llm"
     assert out.startswith("1.")
@@ -89,7 +89,7 @@ def test_organize_retries_when_over_compressed(monkeypatch):
     src = "今天下午三点开项目评审会，第一点对齐进度，第二点确认预算，第三点安排下季度计划，请大家都参加。"
     calls = {"n": 0}
 
-    def fake_generate(system, user, max_tokens=512):
+    def fake_generate(system, user, max_tokens=512, temperature=0.2):
         calls["n"] += 1
         if calls["n"] == 1:
             return "开评审会。"  # 模拟被总结过头：有效字数远小于原文 60%
@@ -105,7 +105,7 @@ def test_organize_falls_back_after_second_over_compression(monkeypatch):
     eng = _engine()
     monkeypatch.setattr(eng, "available", lambda: True)
     src = "今天下午三点开项目评审会，第一点对齐进度，第二点确认预算，第三点安排下季度计划，请大家都参加。"
-    monkeypatch.setattr(eng, "_generate", lambda s, u, max_tokens=512: "开会。")
+    monkeypatch.setattr(eng, "_generate", lambda s, u, max_tokens=512, temperature=0.2: "开会。")
     out, source = eng.organize(src)
     assert out == "" and source == "fallback"  # 宁可不整理，也不丢内容
 
@@ -116,7 +116,7 @@ def test_organize_short_text_uses_stricter_floor(monkeypatch):
     src = "今天天气很好，我们下午3点开会。"  # 14 个有效字：短文本阈值 0.75
     calls = {"n": 0}
 
-    def fake_generate(system, user, max_tokens=512):
+    def fake_generate(system, user, max_tokens=512, temperature=0.2):
         calls["n"] += 1
         if calls["n"] == 1:
             return "3 点开会。"  # 丢掉「下午」等词，有效字数 64% < 75%
@@ -138,7 +138,7 @@ def test_organize_injects_hotwords(monkeypatch):
     monkeypatch.setattr(eng, "available", lambda: True)
     seen = {}
 
-    def fake_generate(system, user, max_tokens=512):
+    def fake_generate(system, user, max_tokens=512, temperature=0.2):
         seen["user"] = user
         return "张伟负责 sayo 项目。"
 
@@ -158,6 +158,46 @@ def test_organize_prompt_handles_spurious_periods_and_fillers():
     system = LocalTextEngine._ORGANIZE_SYSTEM
     assert "误加的句号" in system, "应提示合并短语后误加的句号"
     assert "冗余字" in system, "应提示删除识别插入的冗余字"
+    # 严格化：明确区分「该删的冗余」与「该留的修饰」，防过删
+    assert "话题标记" in system, "应说明『的话』作话题标记时去掉"
+    assert "形容词" in system and "领属" in system, "应说明形容词/领属修饰的『的』必须保留"
+    assert "如果" in system, "应说明『如果…的话』固定条件搭配保留『的话』"
+
+
+# ---------------------------------------------------------------- 真实模型回归
+def test_organize_real_model_golden_and_no_overdelete(monkeypatch):
+    """真实模型回归：去掉冗余的/的话，但保留形容词/领属修饰与条件搭配中的。
+    无模型环境（CI）自动跳过；本机有 GGUF 时真实推理验证。"""
+    import pytest, sys
+    sys.path.insert(0, ".")
+    eng = _engine()
+    if not eng.available():
+        pytest.skip("本地模型不可用，跳过真实推理回归")
+
+    # 1) 用户黄金样例链路：ASR 止血 → 规则标点 → LLM 整理
+    from app.core.asr import _strip_spurious_periods
+    from app.core.postprocess import TextPolisher
+    bad = ("主要现在。做的。都是这种图片的视频。后面如果有其他的。形式的话再往上迭代吧。"
+           "计划是准备给它做成。至少自动化率达到 95%，不需要人怎么操作。但现在的话还有。"
+           "几个模块还要再补一补。")
+    polished = TextPolisher().polish(_strip_spurious_periods(bad), tone="auto").text
+    out, source = eng.organize(polished)
+    assert source == "local-llm", source
+    assert "其他形式" in out, out                  # 去掉冗余的
+    assert "但现在还有" in out, out                # 去掉话题标记的话 + 其后逗号
+    assert "自动化率达到95%" in out, out
+
+    # 2) 防过删 + 去冗余：用贴近真实口述的自然句，验证模型可靠处理
+    out_a, src_a = eng.organize("今天的话我们先不改这个的方案以后再定。")
+    assert src_a == "local-llm", out_a
+    assert "今天" in out_a and "今天的话" not in out_a, out_a       # 话题标记的话去掉
+    assert "这个方案" in out_a and "这个的方案" not in out_a, out_a  # 冗余的去掉
+    out_b, src_b = eng.organize("红色的花很漂亮我的话你都不听真是气死我了")
+    assert src_b == "local-llm", out_b
+    assert "红色的花" in out_b, out_b                # 形容词的保留
+    assert "我的话" in out_b, out_b                  # 领属的话保留
+    out_c, src_c = eng.organize("如果下雨的话就取消明天再说")
+    assert src_c == "local-llm" and "如果" in out_c and "的话" in out_c, out_c  # 条件搭配的话保留
 
 
 # ---------------------------------------------------------------- 一键总结
@@ -175,7 +215,7 @@ def test_summarize_brief_mode_uses_brief_prompt(monkeypatch):
     monkeypatch.setattr(eng, "available", lambda: True)
     seen = {}
 
-    def fake_generate(system, user, max_tokens=512):
+    def fake_generate(system, user, max_tokens=512, temperature=0.2):
         seen["system"] = system
         return "短摘要。"
 

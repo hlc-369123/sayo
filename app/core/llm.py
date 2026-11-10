@@ -99,12 +99,13 @@ class LocalTextEngine:
             self._llm = Llama(**kwargs)
         return self._llm
 
-    def _generate(self, system: str, user: str, max_tokens: int = 512) -> str:
+    def _generate(self, system: str, user: str, max_tokens: int = 512,
+                  temperature: float = 0.2) -> str:
         llm = self._get_llm()
         out = llm.create_chat_completion(
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
-            temperature=0.2,
+            temperature=temperature,
             max_tokens=max_tokens,
         )
         return (out["choices"][0]["message"]["content"] or "").strip()
@@ -163,9 +164,23 @@ class LocalTextEngine:
         "规则：\n"
         "1) 修正错别字、同音字与口误，按上下文恢复说话人本意；专有名词严格按《专有名词表》的写法输出；\n"
         "2) 只删除语气词（嗯/呃/那个）、口头禅和字面重复，不删除任何实质内容；\n"
-        "2.5) 原稿可能带有语音识别误加的标点与冗余字：按语义把「短语后误加的句号」合并为正确的断句与标点"
-        "（如「主要现在。做的。都是…」应连成「主要现在做的都是…」）；删除明显由识别插入的冗余字"
-        "（如不应出现的『的』『的话』以及被重复读出的『还/要』），但保留有实义的用词，绝不臆造删除；\n"
+        "2.5) 原稿可能带语音识别误加的标点与冗余字，按语义整理：\n"
+        "  · 把「短语后误加的句号」合并为正确的断句与标点（如「主要现在。做的。都是…」应连成「主要现在做的都是…」）；\n"
+        "  · 删除识别插入或冗余的字：\n"
+        "    - 冗余的『的』：『其他/这个/那个/各种/那种』等限定词后、名词前的『的』是多余的，应去掉"
+        "（如『其他的形式』→『其他形式』『这个的问题』→『这个问题』）；\n"
+        "      但形容词或领属修饰名词时的『的』必须保留（如『红色的花』『我的书』『重要的会议』『他说的话』）；\n"
+        "    - 冗余的『的话』：在『如果/要是/假设/假如…的话』等固定条件搭配中保留；"
+        "『X 的话』表『X 说的话』时也必须保留（如『我的话』『他说的话』『你说的话』）；"
+        "当它仅作话题标记（如『X 的话，Y』『今天的话』『但现在的话』）且无实义时应去掉，"
+        "并连同其后不必要的逗号一起去掉（如『但现在的话，还有』→『但现在还有』『今天的话我们』→『今天我们』）；\n"
+        "    - 被重复读出的『还/要』等助词也去掉；\n"
+        "  · 冗余字处理示例（务必照此风格执行）：\n"
+        "      原稿：「后面如果有其他的形式的话再往上迭代吧，但现在的话还有几个模块要补一补」\n"
+        "      整理：「后面如果有其他形式的话，再往上迭代吧。但现在还有几个模块要补一补」\n"
+        "      —— 去掉『其他的形式』的冗余『的』；去掉话题标记『的话』及其后多余的逗号；"
+        "保留『如果…的话』条件搭配中的『的话』。\n"
+        "  · 上一条的删除只针对去掉后语义完全不变的冗余字，保留一切有实义的用词，绝不臆造删除。\n"
         "3) 逐句保留全部信息：每一个要点、数字、日期、人名、项目名、结论都必须出现在输出里，"
         "禁止省略、禁止合并概括、禁止提炼缩写；\n"
         "4) 说话人改口重说时（如「不对，我是说……」「应该是……」），只保留最后确认的说法；\n"
@@ -220,12 +235,13 @@ class LocalTextEngine:
             words = "、".join(dict.fromkeys(hotwords))[:300]
             prompt += f"\n\n【专有名词表】（出现时必须按此写法输出）：{words}"
         try:
-            out = self._generate(self._ORGANIZE_SYSTEM, prompt, max_tokens=1536)
+            out = self._generate(self._ORGANIZE_SYSTEM, prompt, max_tokens=1536,
+                                 temperature=0.0)
             first_floor, retry_floor = self._floors(text)
             if self._over_compressed(text, out, floor=first_floor):
                 retry = self._generate(
                     self._ORGANIZE_SYSTEM + "\n重要：" + self._RETRY_SUFFIX,
-                    prompt, max_tokens=1536)
+                    prompt, max_tokens=1536, temperature=0.0)
                 if self._over_compressed(text, retry, floor=retry_floor):
                     return "", "fallback"  # 两次都过度删减：宁可不整理，也不丢内容
                 return retry, "local-llm"
