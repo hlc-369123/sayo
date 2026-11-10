@@ -104,6 +104,50 @@ def log_note(message: str, filename: str = "runtime.log") -> None:
         pass
 
 
+# ------------------------------------------------------------------ 单实例锁
+# 保活文件描述符：一旦被 GC 关闭，flock 立刻释放，锁就形同虚设。
+_INSTANCE_LOCK_FD: int | None = None
+
+
+def _acquire_gui_instance_lock() -> bool:
+    """确保同一时间只有一个 GUI 实例在运行。
+
+    背景：/Applications 的正式版与 dist/ 里的构建副本曾同时运行。两个进程
+    会同时注册同一组全局热键、抢占麦克风、互相静音/恢复系统输出，录到的
+    音频只剩零星尖峰（峰值 0.86 但 p90=0.00126），被判为「未检测到有效
+    语音」→ 不输出文字、不写历史记录，看起来像整个应用坏掉了。
+
+    用 flock 而非 pidfile：锁由内核持有，进程退出（含崩溃）自动释放，
+    不会留下过期锁文件把后续正常启动挡在门外。
+    --self-check / --file / --cli 不走 GUI 分支，不受此锁影响。
+
+    任何异常一律 fail-open（放行）：宁可退化成多实例，也绝不让应用起不来。
+    """
+    global _INSTANCE_LOCK_FD
+    import os
+    try:
+        import fcntl  # macOS / Linux；Windows 无此模块
+    except ImportError:
+        return True
+    try:
+        fd = os.open(str(logs_dir() / "sayo.instance.lock"),
+                     os.O_CREAT | os.O_RDWR, 0o600)
+    except Exception as exc:
+        log_note(f"单实例锁初始化失败（已放行）：{type(exc).__name__}: {exc}")
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return False
+    except Exception as exc:
+        log_note(f"单实例锁获取失败（已放行）：{type(exc).__name__}: {exc}")
+        os.close(fd)
+        return True
+    _INSTANCE_LOCK_FD = fd
+    return True
+
+
 def build_live_engine(settings: Settings) -> ASREngine:
     """实时预览用 int8 轻量引擎，与主 fp32 引擎隔离，避免并发改模型。
 
@@ -988,6 +1032,20 @@ def main(argv=None) -> int:
         return run_benchmark(settings, args.bench_file)
     if args.cli or args.file:
         return run_cli(settings, args.file)
+    # 只给 GUI 加锁：自检 / 离线转写 / 命令行允许与常驻实例并存。
+    if not _acquire_gui_instance_lock():
+        # 不能静默退出——用户会以为「点了没反应」。明确告知已有实例，
+        # 并提示构建副本（dist/）是常见的重复启动来源。
+        log_note("拒绝重复启动：已有 GUI 实例持有单实例锁", "instance.log")
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        qapp = QApplication.instance() or QApplication(sys.argv)
+        QMessageBox.warning(
+            None, f"{APP_NAME} 已在运行",
+            "检测到轻述 sayo 已经在运行，本次启动已取消。\n\n"
+            "请只使用 /Applications 中的正式版；若刚覆盖安装过，"
+            "请先从菜单栏退出旧实例再启动。\n"
+            "（dist/ 目录下的构建副本请勿直接打开）")
+        return 0
     return run_gui(settings)
 
 
