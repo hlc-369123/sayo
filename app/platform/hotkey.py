@@ -194,23 +194,32 @@ class CarbonHotkeys:
             return False
         self._handler_ref = href
 
+        registered_any = False
         for index, binding in enumerate(bindings):
             parsed = carbon_combo(binding.combo)
             if parsed is None:
-                self.uninstall()
-                self.error = f"组合键 {binding.combo} 无法注册为系统热键"
-                return False
+                # 旧行为：任何一个组合无法解析就 uninstall 全部并失败——
+                # 用户改坏一个键，另一个本来可用的键也跟着失效（「新旧键都不管用」）。
+                # 现在只跳过无效组合，其余热键照常注册。
+                self.error = f"组合键 {binding.combo} 无法注册为系统热键，已跳过"
+                continue
             code, mods = parsed
             ref = ctypes.c_void_p()
             status = lib.RegisterEventHotKey(
                 code, mods, _EventHotKeyID(_SIGNATURE, index + 1),
                 target, 0, ctypes.byref(ref))
             if status != 0:
-                self.uninstall()
                 self.error = (f"系统拒绝注册 {binding.combo}（OSStatus {status}）；"
-                              "该组合键可能已被其他应用或系统占用")
-                return False
+                              "该组合键可能已被其他应用或系统占用，已跳过")
+                continue
             self._hotkey_refs.append(ref)
+            registered_any = True
+        # 热键 id 仍用原始 index，跳过若干组合不影响其余组合与 dispatch 的对位
+        if bindings and not registered_any:
+            self.uninstall()
+            if not self.error:
+                self.error = "没有任何组合键注册成功"
+            return False
         self.count = len(self._hotkey_refs)
         return True
 

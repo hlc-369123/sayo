@@ -15,6 +15,7 @@ from ..config import (
 from ..core import accel
 from ..core.asr import ASREngine
 from ..platform import permissions
+from ..platform.hotkey import carbon_combo
 from .themes import DEFAULT_THEME, get_theme, theme_items, ui_stylesheet
 
 POST_LABELS = [
@@ -26,6 +27,90 @@ POST_LABELS = [
     ("normalize_spacing", "中英混排空格规范化"),
     ("personal_dictionary", "个人词典纠错与热词偏置"),
 ]
+
+
+# -------------------------------------------------------------- 快捷键录入框
+# Qt 修饰键 → 配置标准名（与 platform/hotkey.MOD_ALIASES 对齐），顺序固定
+_QT_MODS = [
+    (Qt.KeyboardModifier.MetaModifier, "cmd"),
+    (Qt.KeyboardModifier.ControlModifier, "ctrl"),
+    (Qt.KeyboardModifier.AltModifier, "alt"),
+    (Qt.KeyboardModifier.ShiftModifier, "shift"),
+]
+# Qt 特殊键 → 热键普通键名（必须能与 platform/hotkey.KEYCODES 对上，否则系统热键注册不了）
+_QT_KEYS = {
+    Qt.Key_Space: "space", Qt.Key_Return: "enter", Qt.Key_Enter: "enter",
+    Qt.Key_Tab: "tab", Qt.Key_Backspace: "backspace", Qt.Key_Delete: "delete",
+    Qt.Key_Home: "home", Qt.Key_End: "end", Qt.Key_PageUp: "pageup",
+    Qt.Key_PageDown: "pagedown", Qt.Key_Left: "left", Qt.Key_Right: "right",
+    Qt.Key_Up: "up", Qt.Key_Down: "down",
+    Qt.Key_Minus: "-", Qt.Key_Equal: "=", Qt.Key_BracketLeft: "[",
+    Qt.Key_BracketRight: "]", Qt.Key_Backslash: "\\", Qt.Key_Semicolon: ";",
+    Qt.Key_Apostrophe: "'", Qt.Key_Comma: ",", Qt.Key_Period: ".",
+    Qt.Key_Slash: "/", Qt.Key_QuoteLeft: "`",
+}
+_MODIFIER_ONLY_KEYS = frozenset({
+    Qt.Key_Control, Qt.Key_Meta, Qt.Key_Alt, Qt.Key_Shift, Qt.Key_AltGr,
+    Qt.Key_CapsLock, Qt.Key_NumLock,
+})
+
+
+def qt_key_name(key) -> str | None:
+    """Qt.Key_* → 热键普通键名；无法映射到系统热键的键返回 None。"""
+    if key in _QT_KEYS:
+        return _QT_KEYS[key]
+    if Qt.Key_A <= key <= Qt.Key_Z:
+        return chr(ord("a") + key - Qt.Key_A)
+    if Qt.Key_0 <= key <= Qt.Key_9:
+        return chr(ord("0") + key - Qt.Key_0)
+    if Qt.Key_F1 <= key <= Qt.Key_F12:
+        return f"f{key - Qt.Key_F1 + 1}"
+    return None
+
+
+def qt_combo(modifiers, key) -> str | None:
+    """(Qt 修饰键, Qt.Key_*) → 'cmd+shift+space' 形式的组合串。
+
+    规则与系统热键一致：至少一个修饰键 + 恰好一个普通键。
+    纯修饰键按键或无法映射的键返回 None（录入框忽略，继续等待有效组合）。
+    """
+    if key in _MODIFIER_ONLY_KEYS:
+        return None
+    plain = qt_key_name(key)
+    if plain is None:
+        return None
+    mods_value = getattr(modifiers, "value", modifiers)  # 兼容 Qt 枚举与纯 int
+    mods_flag = Qt.KeyboardModifier(mods_value)
+    mods = [name for flag, name in _QT_MODS if mods_flag & flag]
+    if not mods:
+        return None
+    return "+".join(mods + [plain])
+
+
+class HotkeyEdit(QLineEdit):
+    """快捷键录入框：点击聚焦后直接按下组合键即可录入，退格/删除/Esc 清空。
+
+    取代原来只能手打文本的 QLineEdit——用户期望「清空后按一下对应按键
+    就自动识别进去」，手打 cmd+shift+space 既不直观也容易拼错拼成无效组合。
+    """
+
+    def __init__(self, combo: str = ""):
+        super().__init__(combo)
+        self.setPlaceholderText("点击此处后按下组合键，如 ⌘+Shift+空格")
+        self.setToolTip(
+            "点击输入框，然后直接按下你想用的组合键（需含修饰键，"
+            "如 cmd+shift+space、ctrl+alt+d）；按退格清空。")
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key_Backspace, Qt.Key_Delete, Qt.Key_Escape):
+            self.clear()
+            event.accept()
+            return
+        combo = qt_combo(event.modifiers(), event.key())
+        if combo:
+            self.setText(combo)
+        # 纯修饰键 / 无法映射的键：忽略，继续等待有效组合
+        event.accept()
 
 
 class SettingsWindow(QWidget):
@@ -126,8 +211,8 @@ class SettingsWindow(QWidget):
     def _build_general(self):
         w, f = self._form()
         s = self.settings.data
-        self.ed_hotkey = QLineEdit(s["hotkey_dictate"])
-        self.ed_hotkey_ask = QLineEdit(s["hotkey_ask"])
+        self.ed_hotkey = HotkeyEdit(s["hotkey_dictate"])
+        self.ed_hotkey_ask = HotkeyEdit(s["hotkey_ask"])
         self.ck_ptt = QCheckBox("按住快捷键说话，松开即结束")
         self.ck_ptt.setChecked(bool(s["push_to_talk"]))
         self.cb_inject = QComboBox()
@@ -157,7 +242,7 @@ class SettingsWindow(QWidget):
         self.cb_theme.currentIndexChanged.connect(self._preview_theme)
         f.addRow("听写快捷键", self.ed_hotkey)
         f.addRow("Ask / 编辑快捷键", self.ed_hotkey_ask)
-        hint_left = QLabel("格式示例：cmd+shift+space、cmd+shift+e、ctrl+alt+d")
+        hint_left = QLabel("点击输入框后直接按下组合键即可录入（如 ⌘+Shift+空格）；退格清空")
         hint_right = QLabel("系统级热键，无需输入监控授权；保存后立即重新注册")
         hint_left.setWordWrap(True)
         hint_right.setWordWrap(True)
@@ -677,9 +762,23 @@ class SettingsWindow(QWidget):
             self.sl_threshold.setValue(int(threshold * 100))
             self.sp_silence.setValue(silence)
             self._initial_sensitivity = level
+        dictate_hotkey = self.ed_hotkey.text().strip() or DEFAULT_SETTINGS["hotkey_dictate"]
+        ask_hotkey = self.ed_hotkey_ask.text().strip() or DEFAULT_SETTINGS["hotkey_ask"]
+        # 保存前校验：组合键必须能注册为系统热键（修饰键+普通键）。
+        # 旧行为：无效组合照样写入配置，重建热键时 Carbon 整体注册失败，
+        # 导致新旧快捷键全部失效。这里直接拒绝保存、保留原可用配置。
+        bad = [c for c in (dictate_hotkey, ask_hotkey) if carbon_combo(c) is None]
+        if bad:
+            QMessageBox.warning(
+                self, "快捷键无法注册",
+                "以下组合键无法注册为系统热键（需要「修饰键 + 普通键」，"
+                "如 cmd+shift+space、ctrl+alt+d）：\n  · "
+                + "\n  · ".join(bad)
+                + "\n\n本次未保存，原有快捷键保持不变；请点击输入框后重新按下组合键。")
+            return
         self.settings.update({
-            "hotkey_dictate": self.ed_hotkey.text().strip() or DEFAULT_SETTINGS["hotkey_dictate"],
-            "hotkey_ask": self.ed_hotkey_ask.text().strip() or DEFAULT_SETTINGS["hotkey_ask"],
+            "hotkey_dictate": dictate_hotkey,
+            "hotkey_ask": ask_hotkey,
             "push_to_talk": self.ck_ptt.isChecked(),
             "inject_method": self.cb_inject.currentText(),
             "restore_clipboard": self.ck_restore.isChecked(),
