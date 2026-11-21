@@ -15,7 +15,7 @@ from ..config import (
 from ..core import accel
 from ..core.asr import ASREngine
 from ..platform import permissions
-from ..platform.hotkey import carbon_combo
+from ..platform.hotkey import valid_hotkey
 from ..platform.keycapture import KeyCapture
 from .themes import DEFAULT_THEME, get_theme, theme_items, ui_stylesheet
 
@@ -70,10 +70,11 @@ def qt_key_name(key) -> str | None:
 
 
 def qt_combo(modifiers, key) -> str | None:
-    """(Qt 修饰键, Qt.Key_*) → 'cmd+shift+space' 形式的组合串。
+    """(Qt 修饰键, Qt.Key_*) → 'cmd+shift+space' 形式的配置串。
 
-    规则与系统热键一致：至少一个修饰键 + 恰好一个普通键。
-    纯修饰键按键或无法映射的键返回 None（录入框忽略，继续等待有效组合）。
+    参考 Typeless「press the key or key combination」：单个普通键（如单个
+    字母/功能键）也合法，无需修饰键。纯修饰键按键（还没按普通键）返回 None，
+    继续等待；无法映射的键也返回 None。
     """
     if key in _MODIFIER_ONLY_KEYS:
         return None
@@ -83,9 +84,7 @@ def qt_combo(modifiers, key) -> str | None:
     mods_value = getattr(modifiers, "value", modifiers)  # 兼容 Qt 枚举与纯 int
     mods_flag = Qt.KeyboardModifier(mods_value)
     mods = [name for flag, name in _QT_MODS if mods_flag & flag]
-    if not mods:
-        return None
-    return "+".join(mods + [plain])
+    return "+".join(mods + [plain]) if mods else plain
 
 
 class HotkeyEdit(QLineEdit):
@@ -100,10 +99,11 @@ class HotkeyEdit(QLineEdit):
 
     def __init__(self, combo: str = ""):
         super().__init__(combo)
-        self.setPlaceholderText("点击此处后按下组合键，如 ⌘+Shift+空格")
+        self.setPlaceholderText("点击此处后按键，如 ⌘+Shift+空格 或单个 Option")
         self.setToolTip(
-            "点击输入框，然后直接按下你想用的组合键（需含修饰键，"
-            "如 cmd+shift+space、ctrl+alt+d）；按退格清空。")
+            "点击输入框，然后直接按下想用的组合键（cmd+shift+space、"
+            "ctrl+alt+d）或单个按键（option、fn、字母等，同 Typeless）；"
+            "按退格清空。")
         self._capture = KeyCapture()
         self._capture_enabled = False
 
@@ -268,8 +268,8 @@ class SettingsWindow(QWidget):
         self.cb_theme.currentIndexChanged.connect(self._preview_theme)
         f.addRow("听写快捷键", self.ed_hotkey)
         f.addRow("Ask / 编辑快捷键", self.ed_hotkey_ask)
-        hint_left = QLabel("点击输入框后直接按下组合键即可录入（如 ⌘+Shift+空格）；退格清空")
-        hint_right = QLabel("系统级热键，无需输入监控授权；保存后立即重新注册")
+        hint_left = QLabel("点击输入框后按键即可录入：组合键（⌘+Shift+空格）或单个键（Option / fn）；退格清空")
+        hint_right = QLabel("组合键免授权；单键需输入监控授权；保存后立即生效")
         hint_left.setWordWrap(True)
         hint_right.setWordWrap(True)
         hint_left.setAlignment(Qt.AlignVCenter)
@@ -790,17 +790,17 @@ class SettingsWindow(QWidget):
             self._initial_sensitivity = level
         dictate_hotkey = self.ed_hotkey.text().strip() or DEFAULT_SETTINGS["hotkey_dictate"]
         ask_hotkey = self.ed_hotkey_ask.text().strip() or DEFAULT_SETTINGS["hotkey_ask"]
-        # 保存前校验：组合键必须能注册为系统热键（修饰键+普通键）。
-        # 旧行为：无效组合照样写入配置，重建热键时 Carbon 整体注册失败，
-        # 导致新旧快捷键全部失效。这里直接拒绝保存、保留原可用配置。
-        bad = [c for c in (dictate_hotkey, ask_hotkey) if carbon_combo(c) is None]
+        # 保存前校验：组合键（修饰键+普通键）或单个按键都合法（同 Typeless：
+        # "press the key or key combination"）。单键如 option / fn / 单个字母。
+        # 无效值直接拒绝保存、保留原可用配置，避免重建热键时整体失败。
+        bad = [c for c in (dictate_hotkey, ask_hotkey) if not valid_hotkey(c)]
         if bad:
             QMessageBox.warning(
                 self, "快捷键无法注册",
-                "以下组合键无法注册为系统热键（需要「修饰键 + 普通键」，"
-                "如 cmd+shift+space、ctrl+alt+d）：\n  · "
-                + "\n  · ".join(bad)
-                + "\n\n本次未保存，原有快捷键保持不变；请点击输入框后重新按下组合键。")
+                "以下按键无法注册为热键：\n  · " + "\n  · ".join(bad)
+                + "\n\n请点击输入框后按下一个组合键（如 cmd+shift+space）"
+                  "或单个按键（如 option、fn、d），然后重新保存。"
+                  "\n本次未保存，原有快捷键保持不变。")
             return
         self.settings.update({
             "hotkey_dictate": dictate_hotkey,

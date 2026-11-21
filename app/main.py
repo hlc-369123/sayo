@@ -220,16 +220,24 @@ def self_check(settings: Settings) -> int:
         print(f"  - {st.label}: {'已授权' if st.granted is True else ('未授权' if st.granted is False else '需人工确认')}")
     from .platform.focus import describe as focus_desc
     print("焦点检测：", focus_desc())
-    from .platform.hotkey import carbon_combo
+    from .platform.hotkey import (
+        carbon_combo, is_single_modifier, is_single_plain_key, valid_hotkey,
+    )
     for label, key in (("听写快捷键", "hotkey_dictate"), ("编辑快捷键", "hotkey_ask")):
         combo = settings.get(key)
-        mapped = carbon_combo(combo)
-        print(f"{label}：{combo} · 系统热键映射：",
-              "可注册（免授权）" if mapped else "不可用系统热键，将回退到键盘监听")
+        if carbon_combo(combo):
+            mapping = "可注册（免授权）"
+        elif is_single_modifier(combo) or is_single_plain_key(combo):
+            mapping = "单键热键（系统事件监听，需输入监控授权）"
+        elif not valid_hotkey(combo):
+            mapping = "无效组合，需要重新设置"
+        else:
+            mapping = "将回退到键盘监听"
+        print(f"{label}：{combo} · 系统热键映射：{mapping}")
     tap_ok, tap_detail = event_tap_available()
-    print("全局键盘监听（仅回退后端使用）：", "可用" if tap_ok else "不可用", "-", tap_detail)
-    print("说明：macOS 上 space = 空格键，⌘ + Shift + 空格 三键同按；"
-          "系统热键由 Carbon 注册，不需要输入监控权限")
+    print("全局键盘监听（单键热键/回退后端使用）：", "可用" if tap_ok else "不可用", "-", tap_detail)
+    print("说明：组合键（如 ⌘+Shift+空格）由 Carbon 注册、免授权；"
+          "单个按键（如 option、fn、单个字母）用系统事件监听、需输入监控授权。")
     try:
         from pynput.keyboard import Listener  # noqa: F401
         print("键盘监听模块 pynput：随包可用")

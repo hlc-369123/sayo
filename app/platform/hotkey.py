@@ -38,6 +38,36 @@ MOD_ALIASES = {
 
 MODIFIER_KEYS = frozenset({"cmd", "ctrl", "alt", "shift", "fn"})
 
+# macOS 虚拟键码：单个修饰键在按下时只产生 flagsChanged 事件、没有对应的
+# keyDown keycode。要让「按一个 option/fn 就开始听写」生效，必须按虚拟键码
+# 逐个监听 flagsChanged 的边缘（松开→按下）。左右修饰键码不同，都列出来。
+MODIFIER_KEYCODES: dict[str, tuple[int, ...]] = {
+    "cmd": (54, 55),       # kVK_RightCommand / kVK_Command
+    "ctrl": (59, 62),      # kVK_Control / kVK_RightControl
+    "alt": (58, 61),       # kVK_Option / kVK_RightOption（Typeless 默认右 Option）
+    "shift": (56, 60),     # kVK_Shift / kVK_RightShift
+    "fn": (63,),           # kVK_Function
+}
+
+
+def is_single_modifier(combo: str) -> bool:
+    """combo 是否是「恰好一个修饰键」（option / fn / cmd 等单键热键）。
+
+    这类热键 Carbon RegisterEventHotKey 注册不了（修饰键无 keyDown keycode），
+    必须走 flagsChanged 监听；Typeless 的默认口述键就是单个右 Option。
+    """
+    keys = parse_combo(combo)
+    return len(keys) == 1 and next(iter(keys)) in MODIFIER_KEYS
+
+
+def is_single_plain_key(combo: str) -> bool:
+    """combo 是否是「恰好一个普通键」（单个字母/数字/功能键，无修饰键）。"""
+    keys = parse_combo(combo)
+    if len(keys) != 1:
+        return False
+    key = next(iter(keys))
+    return key not in MODIFIER_KEYS and key in KEYCODES
+
 
 def normalize_key(name: str) -> str:
     """把 pynput 的键名与用户输入的键名统一到同一套别名。"""
@@ -76,6 +106,17 @@ KEYCODES: dict[str, int] = {
     "-": 27, "=": 24, "[": 33, "]": 30, "\\": 42, ";": 41, "'": 39,
     ",": 43, ".": 47, "/": 44, "`": 10,
 }
+
+
+def valid_hotkey(combo: str) -> bool:
+    """combo 能否作为热键使用：可被 Carbon 注册的组合键，或合法单键。
+
+    参考 Typeless「press the key or key combination」：单个修饰键（option/fn）
+    与单个普通键都合法。单键走 CGEventTap 触发，组合键走 Carbon。
+    """
+    return (carbon_combo(combo) is not None
+            or is_single_modifier(combo)
+            or is_single_plain_key(combo))
 
 
 def carbon_combo(combo: str) -> tuple[int, int] | None:
@@ -135,8 +176,12 @@ class CarbonHotkeys:
         self.error = ""
         self.count = 0
 
-    def install(self, bindings, dispatch) -> bool:
+    def install(self, bindings, dispatch, indices=None) -> bool:
+        """注册组合键热键。indices 给出每个 binding 在全局列表里的下标，
+        用于 dispatch 对位（混合后端时只把组合键子集交给 Carbon）。"""
         self.error = ""
+        if indices is None:
+            indices = list(range(len(bindings)))
         if sys.platform != "darwin":
             self.error = "非 macOS 平台"
             return False
@@ -195,9 +240,13 @@ class CarbonHotkeys:
         self._handler_ref = href
 
         registered_any = False
-        for index, binding in enumerate(bindings):
+        for pos, binding in enumerate(bindings):
+            global_index = indices[pos] if pos < len(indices) else pos
             parsed = carbon_combo(binding.combo)
             if parsed is None:
+                # 单键 binding 由 SingleKeyHotkeys 处理，不算 Carbon 的失败
+                if is_single_modifier(binding.combo) or is_single_plain_key(binding.combo):
+                    continue
                 # 旧行为：任何一个组合无法解析就 uninstall 全部并失败——
                 # 用户改坏一个键，另一个本来可用的键也跟着失效（「新旧键都不管用」）。
                 # 现在只跳过无效组合，其余热键照常注册。
@@ -206,7 +255,7 @@ class CarbonHotkeys:
             code, mods = parsed
             ref = ctypes.c_void_p()
             status = lib.RegisterEventHotKey(
-                code, mods, _EventHotKeyID(_SIGNATURE, index + 1),
+                code, mods, _EventHotKeyID(_SIGNATURE, global_index + 1),
                 target, 0, ctypes.byref(ref))
             if status != 0:
                 self.error = (f"系统拒绝注册 {binding.combo}（OSStatus {status}）；"
@@ -263,6 +312,158 @@ class CarbonHotkeys:
         self.count = 0
 
 
+# ------------------------------------------------------------ 单键热键（CGEventTap）
+# 修饰键标志位（CGEventFlags）——flagsChanged 事件里用它们判断按下/松开
+_CG_FLAG_CMD = 1 << 20
+_CG_FLAG_CTRL = 1 << 18
+_CG_FLAG_ALT = 1 << 19
+_CG_FLAG_SHIFT = 1 << 17
+_CG_FLAG_FN = 1 << 23
+_MOD_FLAG = {
+    "cmd": _CG_FLAG_CMD, "ctrl": _CG_FLAG_CTRL, "alt": _CG_FLAG_ALT,
+    "shift": _CG_FLAG_SHIFT, "fn": _CG_FLAG_FN,
+}
+
+
+class SingleKeyHotkeys:
+    """监听「单个按键」热键（单个修饰键 or 单个普通键）。
+
+    Carbon RegisterEventHotKey 要求「修饰键+普通键」，注册不了单个修饰键；
+    而单个普通键注册成全局热键会吞掉正常打字，也不合适。这类热键改用
+    CGEventTap 在事件流里按虚拟键码/修饰键标志判断按下与松开：
+      - 单个修饰键（option/fn/cmd/…）：监听 flagsChanged，检测 松开→按下 边缘；
+      - 单个普通键：监听 keyDown/keyUp，仅当无修饰键同时按下时才派发。
+    回调里只做状态判断与派发，真正的动作由 HotkeyManager 在新线程执行。
+
+    必须在主线程 install（CFRunLoop 绑定主线程，与 Qt 主循环共存）。
+    """
+
+    def __init__(self):
+        self._tap = None
+        self._source = None
+        self._dispatch = None
+        self._bindings: list = []       # [(index, combo)] 只含单键 binding
+        self._mod_pressed: dict[str, bool] = {}
+        self._plain_pressed: set[int] = set()
+        self.error = ""
+        self.count = 0
+
+    def install(self, single_bindings, dispatch) -> bool:
+        self.error = ""
+        if sys.platform != "darwin" or not single_bindings:
+            return False
+        try:
+            import Quartz  # type: ignore
+        except ImportError:
+            self.error = "缺少 Quartz，无法监听单键热键"
+            return False
+
+        self._bindings = list(single_bindings)  # [(index, combo)]
+        self._dispatch = dispatch
+        self._mod_pressed = {}
+        self._plain_pressed = set()
+
+        # 预置每个修饰键为「未按下」，避免第一次 flagsChanged 误判为松开
+        for _idx, combo in self._bindings:
+            if is_single_modifier(combo):
+                mod = next(iter(parse_combo(combo)))
+                self._mod_pressed[mod] = False
+
+        # 需要监听的事件掩码：修饰键状态变化 + 普通键按下/抬起
+        mask = (Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged)
+                | Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
+                | Quartz.CGEventMaskBit(Quartz.kCGEventKeyUp))
+
+        def on_event(proxy, etype, event, refcon):
+            try:
+                keycode = Quartz.CGEventGetIntegerValueField(
+                    event, Quartz.kCGKeyboardEventKeycode)
+                flags = int(Quartz.CGEventGetFlags(event))
+                if etype == Quartz.kCGEventFlagsChanged:
+                    for index, combo in self._bindings:
+                        if not is_single_modifier(combo):
+                            continue
+                        mod = next(iter(parse_combo(combo)))
+                        flag = _MOD_FLAG.get(mod, 0)
+                        codes = MODIFIER_KEYCODES.get(mod, ())
+                        # 只关心这个事件对应的修饰键（左右键码都算）
+                        if keycode not in codes or not flag:
+                            continue
+                        down = bool(flags & flag)
+                        was = self._mod_pressed.get(mod, False)
+                        if down and not was:
+                            self._mod_pressed[mod] = True
+                            self._fire(index, True)
+                        elif not down and was:
+                            self._mod_pressed[mod] = False
+                            self._fire(index, False)
+                elif etype in (Quartz.kCGEventKeyDown, Quartz.kCGEventKeyUp):
+                    modifiers_down = bool(flags & (_CG_FLAG_CMD | _CG_FLAG_CTRL
+                                                   | _CG_FLAG_ALT | _CG_FLAG_SHIFT
+                                                   | _CG_FLAG_FN))
+                    if modifiers_down:  # 组合键交给 Carbon，不重复派发
+                        return event
+                    for index, combo in self._bindings:
+                        if not is_single_plain_key(combo):
+                            continue
+                        code = KEYCODES.get(next(iter(parse_combo(combo))))
+                        if code != keycode:
+                            continue
+                        if etype == Quartz.kCGEventKeyDown:
+                            if keycode not in self._plain_pressed:
+                                self._plain_pressed.add(keycode)
+                                self._fire(index, True)
+                        else:
+                            if keycode in self._plain_pressed:
+                                self._plain_pressed.discard(keycode)
+                                self._fire(index, False)
+            except Exception:
+                pass  # C 回调绝不能抛异常
+            return event
+
+        tap = Quartz.CGEventTapCreate(
+            Quartz.kCGSessionEventTap,
+            Quartz.kCGHeadInsertEventTap,
+            Quartz.kCGEventTapOptionListenOnly,
+            mask,
+            on_event,
+            None,
+        )
+        if not tap:
+            self.error = "无法创建单键监听（输入监控未授权）"
+            return False
+        source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
+        runloop = Quartz.CFRunLoopGetCurrent()
+        Quartz.CFRunLoopAddSource(runloop, source, Quartz.kCFRunLoopDefaultMode)
+        Quartz.CGEventTapEnable(tap, True)
+        self._tap = tap
+        self._source = source
+        self._runloop = runloop
+        self.count = len(self._bindings)
+        return True
+
+    def _fire(self, index: int, pressed: bool) -> None:
+        if self._dispatch:
+            self._dispatch(index, pressed)
+
+    def uninstall(self) -> None:
+        tap, source, runloop = self._tap, self._source, getattr(self, "_runloop", None)
+        self._tap = None
+        self._source = None
+        self._dispatch = None
+        self._bindings = []
+        self.count = 0
+        if tap is None:
+            return
+        try:
+            import Quartz  # type: ignore
+            Quartz.CGEventTapEnable(tap, False)
+            if source is not None and runloop is not None:
+                Quartz.CFRunLoopRemoveSource(runloop, source, Quartz.kCFRunLoopDefaultMode)
+        except Exception:
+            pass
+
+
 # ------------------------------------------------------------ pynput 回退探测
 def event_tap_available() -> tuple[bool, str]:
     """真实探测本进程能否收到全局按键事件（pynput 回退后端的能力前提）。
@@ -317,6 +518,7 @@ class HotkeyManager:
         self._lock = threading.Lock()
         self._listener = None
         self._carbon: CarbonHotkeys | None = None
+        self._single: SingleKeyHotkeys | None = None
         self._carbon_error = ""
         self._backend = ""
         self._error = ""
@@ -407,17 +609,55 @@ class HotkeyManager:
             pass
 
     def start(self) -> bool:
-        """优先注册免授权的系统热键；只有失败时才回退到需要权限的键盘监听。"""
+        """组合键走免授权的 Carbon；单键（option/fn/单个按键）走 CGEventTap。
+
+        两类可并存：例如听写用单个 option、Ask 用 cmd+shift+e。全部失败才
+        回退到 pynput 键盘监听。dispatch 统一按全局 binding 下标对位。
+        """
         self.stop()
-        if sys.platform == "darwin" and self._bindings:
-            carbon = CarbonHotkeys()
-            if carbon.install(list(self._bindings), self._carbon_dispatch):
-                self._carbon = carbon
-                self._backend = "carbon"
-                self._carbon_error = ""
-                self._error = ""
+        combo_bindings: list[tuple[int, object]] = []
+        single_bindings: list[tuple[int, object]] = []
+        for i, b in enumerate(self._bindings):
+            if is_single_modifier(b.combo) or is_single_plain_key(b.combo):
+                single_bindings.append((i, b))
+            else:
+                combo_bindings.append((i, b))
+
+        carbon_ok = False
+        single_ok = False
+        backend_parts = []
+
+        if sys.platform == "darwin":
+            # 组合键 → Carbon（免授权、系统直接分发）
+            if combo_bindings:
+                carbon = CarbonHotkeys()
+                cb = [b for _i, b in combo_bindings]
+                cidx = [i for i, _b in combo_bindings]
+                if carbon.install(cb, self._carbon_dispatch, indices=cidx):
+                    self._carbon = carbon
+                    carbon_ok = True
+                    backend_parts.append("carbon")
+                    self._carbon_error = ""
+                else:
+                    self._carbon_error = carbon.error
+            # 单键 → CGEventTap（flagsChanged / keyDown）
+            if single_bindings:
+                single = SingleKeyHotkeys()
+                # 单键后端只认 combo 字符串（不做 Binding 对象解析）
+                single_pairs = [(i, b.combo) for i, b in single_bindings]
+                if single.install(single_pairs, self._carbon_dispatch):
+                    self._single = single
+                    single_ok = True
+                    backend_parts.append("single-key")
+                else:
+                    self._error = single.error
+
+            if carbon_ok or single_ok:
+                self._backend = "+".join(backend_parts)
+                self._error = "" if not (single_bindings and not single_ok) else self._error
                 return True
-            self._carbon_error = carbon.error
+
+        # 回退：pynput 键盘监听（需要输入监控授权）
         try:
             from pynput.keyboard import Listener  # type: ignore
             self._listener = Listener(on_press=self._on_press, on_release=self._on_release)
@@ -456,6 +696,12 @@ class HotkeyManager:
             except Exception:
                 pass
             self._carbon = None
+        if self._single is not None:
+            try:
+                self._single.uninstall()
+            except Exception:
+                pass
+            self._single = None
         listener, self._listener = self._listener, None
         with self._lock:
             self._pressed.clear()
@@ -470,18 +716,28 @@ class HotkeyManager:
 
     def health(self) -> dict:
         """给 UI / 日志用的热键健康状态（全部本机查询，不联网）。"""
-        if self._backend == "carbon":
+        if self._backend and "pynput" not in self._backend:
+            # 组合键走 Carbon（免授权），单键走 CGEventTap（需输入监控）
+            has_single = self._single is not None
+            detail = "Carbon 系统热键：系统直接分发，无需输入监控权限"
+            tap_ok = True
+            if has_single:
+                detail += "；单键热键走系统事件监听（需输入监控授权）"
+                tap_ok, tap_detail = event_tap_available()
+                if not tap_ok:
+                    detail += f"：{tap_detail}"
             return {
                 "listener_alive": True,
-                "tap_ok": True,
-                "tap_detail": "Carbon 系统热键：系统直接分发，无需输入监控权限",
-                "error": "",
+                "tap_ok": tap_ok,
+                "tap_detail": detail,
+                "error": self._error,
                 "last_hit": self._last_hit,
                 "bindings": self.describe(),
-                "healthy": True,
-                "backend": "carbon",
-                "carbon_error": "",
-                "registered": self._carbon.count if self._carbon else 0,
+                "healthy": tap_ok and not self._error,
+                "backend": self._backend,
+                "carbon_error": self._carbon_error,
+                "registered": (self._carbon.count if self._carbon else 0)
+                              + (self._single.count if self._single else 0),
             }
         alive = bool(self._listener is not None and self._listener.is_alive())
         tap_ok, tap_detail = event_tap_available()

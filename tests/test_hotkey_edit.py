@@ -40,10 +40,10 @@ def test_qt_combo_maps_modifiers_in_stable_order():
                     Qt.Key_P) == "cmd+ctrl+alt+shift+p"
 
 
-def test_qt_combo_rejects_bare_modifier_only_or_unknown_keys():
+def test_qt_combo_allows_single_key_but_rejects_bare_modifier_or_unknown():
     m = Qt.KeyboardModifier
     assert qt_combo(m.ShiftModifier, Qt.Key_A) == "shift+a"  # 有修饰键即合法
-    assert qt_combo(0, Qt.Key_A) is None                # 裸键不能抢全局按键
+    assert qt_combo(0, Qt.Key_A) == "a"                  # 单个普通键也合法（同 Typeless）
     assert qt_combo(m.MetaModifier, Qt.Key_Meta) is None  # 纯修饰键：等待普通键
     assert qt_combo(m.MetaModifier, Qt.Key_F13) is None   # 无法映射到系统热键的键
 
@@ -94,5 +94,6 @@ def test_combo_from_event_maps_system_reserved_keys():
     assert combo_from_event(14, CMD | SHIFT) == "cmd+shift+e"      # e
     assert combo_from_event(2, CTRL | ALT) == "ctrl+alt+d"         # d
     assert combo_from_event(49, CMD) == "cmd+space"                # Spotlight 组合
-    assert combo_from_event(49, 0) is None                          # 裸键：忽略
+    assert combo_from_event(49, 0) == "space"                       # 单个普通键：合法
+    assert combo_from_event(2, 0) == "d"                            # 单个字母：合法
     assert combo_from_event(999, CMD) is None                       # 未知键码：忽略

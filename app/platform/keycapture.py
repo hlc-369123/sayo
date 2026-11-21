@@ -22,11 +22,23 @@ import sys
 import threading
 
 # 虚拟键码 → 键名，复用热键模块的权威映射（只取每个键码的第一个名字）
-from .hotkey import KEYCODES
+from .hotkey import KEYCODES, MODIFIER_KEYCODES
 
 _CODE_TO_NAME: dict[int, str] = {}
 for _name, _code in KEYCODES.items():
     _CODE_TO_NAME.setdefault(_code, _name)
+
+# 修饰键虚拟键码 → 配置名（option/fn/cmd/…），用于单修饰键录入
+_MODCODE_TO_NAME: dict[int, str] = {}
+for _mname, _codes in MODIFIER_KEYCODES.items():
+    for _c in _codes:
+        _MODCODE_TO_NAME[_c] = _mname
+
+# 配置名 → CGEventFlags 位，用于判断修饰键是按下还是松开
+_FLAG_BY_MOD = {
+    "cmd": 1 << 20, "ctrl": 1 << 18, "alt": 1 << 19,
+    "shift": 1 << 17, "fn": 1 << 23,
+}
 
 # CGEventFlags 修饰键位
 _FLAG_CMD = 1 << 20
@@ -46,18 +58,17 @@ _ESC_CODE = 53
 
 
 def combo_from_event(keycode: int, flags: int) -> str | None:
-    """把 (虚拟键码, CGEventFlags) 翻译成 'cmd+shift+space' 配置串。
+    """把 (虚拟键码, CGEventFlags) 翻译成配置串（如 'cmd+shift+space' 或单键 'd'）。
 
-    修饰键顺序固定为 cmd/ctrl/alt/shift，与 qt_combo / carbon_combo 一致，
-    保证录进去的串能被 carbon_combo 原样注册。无修饰键或无法映射的键返回 None。
+    修饰键顺序固定为 cmd/ctrl/alt/shift，与 qt_combo / carbon_combo 一致。
+    参考 Typeless「press the key or key combination」：单个普通键也合法，
+    所以无修饰键时返回裸键名（如 'd' / 'f1'），而不是拒绝。无法映射返回 None。
     """
     plain = _CODE_TO_NAME.get(keycode)
     if plain is None:
         return None
     mods = [name for flag, name in _MODS if flags & flag]
-    if not mods:
-        return None
-    return "+".join(mods + [plain])
+    return "+".join(mods + [plain]) if mods else plain
 
 
 class KeyCapture:
@@ -93,24 +104,56 @@ class KeyCapture:
                 return True
             self._callback = callback
             self._fired = False
+            self._mod_candidates: list[str] = []  # 已按下、尚未确认的修饰键
+            self._saw_plain = False               # 本次按键序列是否出现过普通键
 
             def on_event(proxy, etype, event, refcon):
-                if etype != Quartz.kCGEventKeyDown or self._fired:
+                if self._fired:
                     return event
                 keycode = Quartz.CGEventGetIntegerValueField(
                     event, Quartz.kCGKeyboardEventKeycode)
                 flags = int(Quartz.CGEventGetFlags(event))
                 cb = self._callback
+
+                if etype == Quartz.kCGEventFlagsChanged:
+                    # 单个修饰键（option/fn/cmd/…）：keycode 直接标识被改变的修饰键
+                    mname = _MODCODE_TO_NAME.get(keycode)
+                    if mname is None or cb is None:
+                        return event
+                    flag = _FLAG_BY_MOD.get(mname, 0)
+                    down = bool(flags & flag)
+                    if down:
+                        # 修饰键按下：记录为候选，等后续判断是否有普通键跟随
+                        if mname not in self._mod_candidates:
+                            self._mod_candidates.append(mname)
+                    else:
+                        # 修饰键松开：若期间没有普通键 keyDown，说明用户只按了
+                        # 这一个（或这几个）修饰键 → 录入单键/多修饰键串
+                        if self._mod_candidates and not self._saw_plain:
+                            combo = "+".join(self._mod_candidates)
+                            self._fired = True
+                            cb(combo)
+                            self.stop()
+                        self._mod_candidates.clear()
+                    return event
+
+                if etype != Quartz.kCGEventKeyDown:
+                    return event
+
                 if keycode == _ESC_CODE or keycode in _CLEAR_CODES:
                     # 退格/删除/Esc：清空后继续等待录入，不停止捕获
+                    self._saw_plain = True
                     if cb:
                         cb("")
                     return event
+
+                # 普通键 keyDown：用当前所有修饰键 + 这个普通键组成串
+                self._saw_plain = True
                 combo = combo_from_event(keycode, flags)
                 if combo and cb:
                     self._fired = True
                     cb(combo)
-                    self.stop()  # 录入到一个完整组合，立即停止监听
+                    self.stop()  # 录入到一个完整组合/单键，立即停止监听
                 return event
 
             tap = Quartz.CGEventTapCreate(

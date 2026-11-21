@@ -5,7 +5,7 @@ import time
 
 from app.platform.hotkey import (
     CarbonHotkeys, HotkeyManager, carbon_combo, event_tap_available,
-    normalize_key, parse_combo,
+    is_single_modifier, is_single_plain_key, normalize_key, parse_combo, valid_hotkey,
 )
 
 
@@ -152,3 +152,74 @@ def test_resume_noop_without_bindings(monkeypatch):
     monkeypatch.setattr(h, "start", lambda: (_ for _ in ()).throw(
         AssertionError("没有绑定不应恢复注册")))
     h.resume()  # 无绑定：不触发 start
+
+
+def test_single_key_detection_and_validation():
+    """单个按键（option/fn/字母）合法，可被保存并走单键后端触发。"""
+    # 单个修饰键（Typeless 默认右 Option）
+    assert is_single_modifier("option") is True
+    assert is_single_modifier("alt") is True
+    assert is_single_modifier("fn") is True
+    assert is_single_modifier("cmd+shift+space") is False
+    assert is_single_modifier("option+d") is False
+    # 单个普通键
+    assert is_single_plain_key("d") is True
+    assert is_single_plain_key("f1") is True
+    assert is_single_plain_key("cmd+d") is False
+    assert is_single_plain_key("option") is False
+    # 统一校验：组合键 + 单键都合法，明显无效值仍拒绝
+    assert valid_hotkey("cmd+shift+space") is True
+    assert valid_hotkey("option") is True
+    assert valid_hotkey("d") is True
+    assert valid_hotkey("") is False
+    assert valid_hotkey("cmd+shift+space+extra+more") is False
+
+
+def test_mixed_backend_preserves_global_index(monkeypatch):
+    """组合键走 Carbon、单键走单键后端时，命中派发仍按全局下标对位。"""
+    h = HotkeyManager()
+    fired: list[str] = []
+    h.register("option", lambda: fired.append("dictate"))          # 单键 → index 0
+    h.register("cmd+shift+e", lambda: fired.append("ask"))         # 组合 → index 1
+
+    carbon_captured: dict = {}
+    single_captured: dict = {}
+
+    class FakeCarbon:
+        def install(self, bindings, dispatch, indices=None):
+            carbon_captured["bindings"] = [b.combo for b in bindings]
+            carbon_captured["indices"] = indices
+            carbon_captured["dispatch"] = dispatch
+            return True
+        def uninstall(self):
+            pass
+        count = 1
+
+    class FakeSingle:
+        def install(self, bindings, dispatch):
+            single_captured["bindings"] = bindings
+            single_captured["dispatch"] = dispatch
+            return True
+        def uninstall(self):
+            pass
+        count = 1
+
+    import app.platform.hotkey as hk
+    monkeypatch.setattr(hk, "CarbonHotkeys", FakeCarbon)
+    monkeypatch.setattr(hk, "SingleKeyHotkeys", FakeSingle)
+    assert h.start() is True
+    # 组合键子集交给 Carbon，但用全局下标 1 对位
+    assert carbon_captured["bindings"] == ["cmd+shift+e"]
+    assert carbon_captured["indices"] == [1]
+    # 单键子集交给单键后端，全局下标 0，且传的是 combo 字符串
+    assert single_captured["bindings"] == [(0, "option")]
+    # 两个后端共用同一 dispatch，按全局 index 命中正确 binding
+    # _carbon_dispatch 有 0.28s 全局防抖，用递增时钟推进避开
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(hk.time, "monotonic", lambda: clock["t"])
+    single_captured["dispatch"](0, True)
+    assert fired == ["dictate"]
+    single_captured["dispatch"](0, False)
+    clock["t"] += 1.0
+    carbon_captured["dispatch"](1, True)
+    assert fired == ["dictate", "ask"]
