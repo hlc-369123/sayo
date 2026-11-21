@@ -108,9 +108,14 @@ class HotkeyEdit(QLineEdit):
             return
         combo = qt_combo(event.modifiers(), event.key())
         if combo:
+            # 按下了「修饰键 + 普通键」组合：直接录入，取代原有内容
             self.setText(combo)
-        # 纯修饰键 / 无法映射的键：忽略，继续等待有效组合
-        event.accept()
+            event.accept()
+            return
+        # 没有有效组合：交给父类正常处理，允许用户手打文本作为兜底
+        # （macOS 上个别系统保留组合键到不了控件，手打仍可设置；保存时
+        #  _save 会用 carbon_combo 校验，无效值照样被拒绝，不会改坏热键）
+        super().keyPressEvent(event)
 
 
 class SettingsWindow(QWidget):

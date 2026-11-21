@@ -116,3 +116,39 @@ def test_carbon_install_skipped_off_macos(monkeypatch):
     c = CarbonHotkeys()
     assert c.install([], lambda i, p: None) is False
     assert c.error
+
+
+def test_suspend_resume_uses_registered_bindings(monkeypatch):
+    """设置窗口录快捷键时暂停全局热键，关闭后按已注册绑定恢复。
+
+    回归：设置窗口开着时 Carbon 全局热键仍触发听写并抢焦点，
+    导致快捷键录入框收不到按键、看起来「按了没反应」。
+    """
+    h = HotkeyManager()
+    started: list[int] = []
+    stopped: list[int] = []
+
+    def fake_start():
+        started.append(1)
+        return True
+
+    def fake_stop():
+        stopped.append(1)
+        h._backend = ""  # 真实 stop() 会清空 backend
+
+    monkeypatch.setattr(h, "start", fake_start)
+    monkeypatch.setattr(h, "stop", fake_stop)
+    h.register("cmd+shift+space", lambda: None)
+    h._backend = "carbon"
+    h.suspend()
+    assert stopped == [1]
+    assert h._backend == ""
+    h.resume()
+    assert started == [1]
+
+
+def test_resume_noop_without_bindings(monkeypatch):
+    h = HotkeyManager()
+    monkeypatch.setattr(h, "start", lambda: (_ for _ in ()).throw(
+        AssertionError("没有绑定不应恢复注册")))
+    h.resume()  # 无绑定：不触发 start

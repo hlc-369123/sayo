@@ -15,7 +15,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QTimer, Signal
 
 from .config import APP_NAME, APP_VERSION, Settings, logs_dir, models_dir, resource_root
 from .core.asr import ASREngine
@@ -334,6 +334,8 @@ class Controller:
         self._force_paste = False  # 胶囊 ✓ 明确要求写进原输入框
         self._ax_nudged = False  # 每次运行最多自动弹一次授权引导
         self._silent_retries = 0  # 录音流假死自动重试计数（最多一次，防死循环）
+        self._force_probe_next = False  # 断流重试时强制同步重探设备
+        self._hotkeys_suspended = False  # 设置窗口打开时暂停全局热键
 
         # 启动后在后台做一次输入设备健康探测：等用户按快捷键时结果已缓存，
         # 不会给「按下 → 开始录音」引入等待。系统默认输入若是断流的蓝牙
@@ -388,7 +390,21 @@ class Controller:
         except Exception:
             pass
 
+    def suspend_hotkeys(self) -> None:
+        """打开设置等需要录按键的窗口时，临时停用全局热键。"""
+        self._hotkeys_suspended = True
+        self.hotkeys.suspend()
+
+    def resume_hotkeys(self) -> None:
+        """关闭设置窗口后恢复全局热键。"""
+        self._hotkeys_suspended = False
+        self.hotkeys.resume()
+
     def setup_hotkeys(self) -> str:
+        if getattr(self, "_hotkeys_suspended", False):
+            # 设置窗口打开期间「保存并应用」也会走到这里重建；挂起状态不注册，
+            # 否则录入框按下的组合会被全局热键抢先触发听写、录不进去。
+            return ""
         # macOS 把 ⌘+Shift+A 保留给系统，Carbon 注册会成功但永远不派发；
         # 老配置自动迁移到可用的 ⌘+Shift+E，避免「按了没反应」又出现一次。
         legacy = {
@@ -440,6 +456,7 @@ class Controller:
         except Exception:
             pass
         Recorder.invalidate_device_cache()  # 重听一次，别继续沿用坏设备
+        self._force_probe_next = True  # 这次允许同步探测（重试值得等 0.5s，找健康设备）
         self.state = "idle"
         self.begin()
 
@@ -471,6 +488,8 @@ class Controller:
         if self.state != "idle":
             return
         self._force_paste = False
+        force_probe = self._force_probe_next
+        self._force_probe_next = False  # 本次无论成败都消费掉，不泄漏到下次按键
         self._remember_front()  # 记住用户当前正在输入的应用
         mode = mode or self.mode
         ok, msg = self.asr.check_models()
@@ -482,7 +501,7 @@ class Controller:
         except Exception:
             self.context = AppContext()
         try:
-            self.recorder.start()
+            self.recorder.start(force_probe=force_probe)
         except RecorderError as exc:
             self._handle_mic_error(str(exc))
             return
@@ -839,6 +858,24 @@ def run_gui(settings: Settings) -> int:
         ctrl.executor.submit(_reload)  # 与识别串行，避免替换模型时并发冲突
 
     settings_win.saved.connect(on_settings_saved)
+
+    class _SettingsHotkeyGuard(QObject):
+        """设置窗口显示时停用全局热键、隐藏时恢复。
+
+        系统级 Carbon 热键不区分焦点：设置窗口开着时按 cmd+shift+... 依然
+        会触发听写并切走焦点，快捷键录入框因此收不到按键、看起来「没更新、
+        按了没反应」。挂起后按键只发给录入框，关闭窗口再恢复热键。
+        """
+
+        def eventFilter(self, watched, event):
+            if event.type() == QEvent.Show:
+                ctrl.suspend_hotkeys()
+            elif event.type() == QEvent.Hide:
+                ctrl.resume_hotkeys()
+            return False
+
+    _settings_guard = _SettingsHotkeyGuard()
+    settings_win.installEventFilter(_settings_guard)
 
     def on_command(cmd: str):
         if cmd == "toggle":

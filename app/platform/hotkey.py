@@ -435,6 +435,20 @@ class HotkeyManager:
                            f"键盘监听也不可用：{exc}；请从菜单栏手动开始听写")
             return False
 
+    def suspend(self) -> None:
+        """临时停用全局热键（打开设置窗口录快捷键时用）。
+
+        Carbon 系统热键是全局的：设置窗口开着时按 cmd+shift+... 仍会触发
+        听写并抢走焦点，导致录入框收不到按键、看起来「按键录入没生效」。
+        停用后按键只发给当前焦点控件（录入框），关闭窗口再 resume 恢复。
+        """
+        self.stop()
+
+    def resume(self) -> None:
+        """恢复被 suspend 停用的全局热键。"""
+        if self._bindings and not self._backend:
+            self.start()
+
     def stop(self) -> None:
         if self._carbon is not None:
             try:

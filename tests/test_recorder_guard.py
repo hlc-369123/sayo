@@ -169,6 +169,40 @@ def test_auto_input_device_result_is_cached(monkeypatch):
     assert calls == [0]  # 第二次直接命中缓存，不会给录音引入探测延迟
 
 
+def test_auto_input_device_nonblocking_never_probes(monkeypatch):
+    """按键→录音路径绝不等待设备探测（实测冷缓存探测要 ~573ms）。
+
+    blocking=False 时即使缓存为空/过期也只能返回 None 或旧值，
+    不能调用 probe_input_device；真正的探测交给启动预热线程。
+    """
+    Recorder.invalidate_device_cache()
+    _install_fake_sounddevice(monkeypatch)
+
+    def should_not_run(*_a, **_k):
+        raise AssertionError("录音路径不应同步探测设备")
+
+    monkeypatch.setattr(recorder_mod, "probe_input_device", should_not_run)
+    idx, note = Recorder({}).auto_input_device(blocking=False)
+    assert idx is None and note == ""
+
+
+def test_auto_input_device_nonblocking_uses_stale_cache(monkeypatch):
+    """缓存过期时也沿用旧值，不让按键等待，也不丢掉已选好的备用设备。"""
+    _install_fake_sounddevice(monkeypatch)
+    import time as _t
+    rec = Recorder({})
+    sig = rec._device_signature()
+    Recorder.invalidate_device_cache()
+    Recorder._device_cache[sig] = (_t.time() - 99999, 2, "已自动切换到备用麦")
+
+    def should_not_run(*_a, **_k):
+        raise AssertionError("过期缓存不应触发同步探测")
+
+    monkeypatch.setattr(recorder_mod, "probe_input_device", should_not_run)
+    idx, note = rec.auto_input_device(blocking=False)
+    assert idx == 2 and "备用麦" in note
+
+
 def test_shares_output_device_true_for_bluetooth(monkeypatch):
     _install_fake_sounddevice(monkeypatch)
     assert Recorder.shares_output_device() is True

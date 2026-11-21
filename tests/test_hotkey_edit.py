@@ -64,14 +64,19 @@ def test_hotkey_edit_captures_press_and_clears(app):
     assert w.text() == "cmd+shift+e"
 
 
-def test_hotkey_edit_invalid_combo_never_enters_field(app):
-    """录入框只产出可注册的组合，从源头杜绝「改坏一个键全失效」。"""
+def test_hotkey_edit_capture_vs_manual_typing(app):
+    """组合键自动录入取代旧值；无修饰键时回退父类允许手打（保存时再校验）。"""
     m = Qt.KeyboardModifier
-    from app.platform.hotkey import carbon_combo
-    w = HotkeyEdit("")
-    for key, mods in ((Qt.Key_F13, m.MetaModifier), (Qt.Key_Meta, m.MetaModifier),
-                      (Qt.Key_A, m.NoModifier)):
-        w.keyPressEvent(_press(key, mods))
-        assert w.text() == ""
-        if w.text():
-            assert carbon_combo(w.text()) is not None
+    w = HotkeyEdit("cmd+shift+space")
+    # 纯修饰键不改内容
+    w.keyPressEvent(_press(Qt.Key_Meta, m.MetaModifier))
+    assert w.text() == "cmd+shift+space"
+    # 有效组合直接录入并取代旧值
+    w.keyPressEvent(_press(Qt.Key_D, m.ControlModifier | m.AltModifier))
+    assert w.text() == "ctrl+alt+d"
+    # 无修饰键的普通按键交给父类（可手打文本兜底）
+    w.clear()
+    from PySide6.QtCore import QEvent
+    typed = QKeyEvent(QEvent.KeyPress, Qt.Key_A, m.NoModifier, "a")
+    w.keyPressEvent(typed)
+    assert w.text() == "a"

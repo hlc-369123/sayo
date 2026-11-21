@@ -198,16 +198,27 @@ class Recorder:
         except Exception:
             return False
 
-    def auto_input_device(self) -> tuple[int | None, str]:
+    def auto_input_device(self, *, blocking: bool = True) -> tuple[int | None, str]:
         """系统默认输入断流时，自动挑一个健康的输入设备。
 
         返回 (设备索引或 None=跟随系统默认, 说明文案)。探测结果按设备列表
         指纹缓存；预热线程正在探测时不阻塞录音，直接沿用旧结果。
+
+        blocking=False 专供「按键 → 开始录音」路径：绝不为了探测设备而阻塞。
+        实测本机 4 个输入设备逐个探测要 ~573ms，若按键时同步做这段探测，
+        用户会明显感到「按下快捷键后迟迟不开始录音」。录音路径只读取缓存
+        （过期也先沿用旧值），真正的探测交给启动预热线程，无需用户等待。
         """
         sig = self._device_signature()
         cached = Recorder._device_cache.get(sig)
-        if cached and time.time() - cached[0] < _CACHE_TTL:
+        fresh = cached and time.time() - cached[0] < _CACHE_TTL
+        if fresh:
             return cached[1], cached[2]
+        if not blocking:
+            # 录音路径零等待：有旧缓存就沿用，没有就跟随系统默认。
+            # 缓存的陈旧只影响「选哪个设备」这一次，输入流假死仍有
+            # _looks_silent 报警 + restart_recording 强制重探兜底。
+            return (cached[1] if cached else None), (cached[2] if cached else "")
         if not _PROBE_LOCK.acquire(blocking=False):
             return (cached[1] if cached else None), (cached[2] if cached else "")
         try:
@@ -242,7 +253,7 @@ class Recorder:
         finally:
             _PROBE_LOCK.release()
 
-    def start(self, device=None) -> None:
+    def start(self, device=None, *, force_probe: bool = False) -> None:
         if self._recording:
             return
         try:
@@ -256,7 +267,11 @@ class Recorder:
             device = self.settings.get("input_device")
         self.auto_device_note = ""
         if device is None:
-            device, self.auto_device_note = self.auto_input_device()
+            # 零阻塞：设备探测已在启动时后台预热，录音路径只读缓存，
+            # 绝不在「按键 → 开始录音」之间插入 ~0.5s 的同步探测。
+            # 只有断流自动重试（缓存已清空）才 force_probe 做一次同步探测。
+            device, self.auto_device_note = self.auto_input_device(
+                blocking=force_probe)
         self._chunks = []
         self._started_at = time.time()
         self._last_voice_at = self._started_at
