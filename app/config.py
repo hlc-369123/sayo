@@ -95,7 +95,10 @@ AUDIO_DIR = user_data_dir() / "audio"
 
 DEFAULT_SETTINGS: dict = {
     # ---- 快捷键 ----
-    "hotkey_dictate": "cmd+shift+space" if sys.platform == "darwin" else "ctrl+shift+space",
+    # 默认听写键 = 左 Option（单个修饰键，同 Typeless push-to-talk 风格）。
+    # 单键热键走 CGEventTap flagsChanged 监听，需「输入监控」授权；
+    # 组合键（如 Ask 键）走 Carbon 免授权注册，两者可并存。
+    "hotkey_dictate": "option_l" if sys.platform == "darwin" else "ctrl+shift+space",
     # ⌘+Shift+A 被 macOS 系统保留，Carbon 注册成功但不派发；用 E 代替
     "hotkey_ask": "cmd+shift+e" if sys.platform == "darwin" else "ctrl+shift+e",
     "push_to_talk": False,  # True = 按住说话、松开结束
@@ -235,6 +238,14 @@ class Settings:
         if not self._data.get("organize_default_migrated_v2"):
             self._data["organize_llm"] = False
             self._data["organize_default_migrated_v2"] = True
+            self.save()
+        # 一次性迁移：听写快捷键从 cmd+shift+space 迁移到 option_l（左 Option 单键）。
+        # 只迁移仍停留在旧默认值的配置；用户自己改过的键保留不动。
+        if not self._data.get("hotkey_default_migrated_v3"):
+            cur = str(self._data.get("hotkey_dictate", "")).strip().lower()
+            if cur in ("cmd+shift+space", "ctrl+shift+space"):
+                self._data["hotkey_dictate"] = DEFAULT_SETTINGS["hotkey_dictate"]
+            self._data["hotkey_default_migrated_v3"] = True
             self.save()
         # 旧配置若停留在最早的「极光 aurora」且无 overlay_style 键，补上默认浮层样式，
         # 不再强制改主题（保留用户当时的视觉选择）。

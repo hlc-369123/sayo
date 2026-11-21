@@ -21,32 +21,51 @@ import threading
 import time
 from dataclasses import dataclass
 
-# 左/右修饰键在 macOS 上是不同的 Key（cmd_r / shift_r / alt_r / ctrl_r），
-# 必须统一归一化，否则用户按右侧 Command 时组合键永远匹配不上。
+# 左/右修饰键在 macOS 上是不同的虚拟键码（如左 Option=58、右 Option=61）。
+# 组合键场景：Carbon RegisterEventHotKey 的 modifier mask 不区分左右（只有一个
+# optionKey 位），所以组合键里 alt_l/alt_r 归一到 alt（见 _GENERIC_SIDE）。
+# 单键场景（Typeless 式「按单个左 Option 开始听写」）：必须区分左右，否则
+# 用户设了左 Option、按右 Option 也会误触发。因此 alt_l/alt_r 各自独立保留。
 MOD_ALIASES = {
     "cmd": "cmd", "command": "cmd", "meta": "cmd", "super": "cmd", "win": "cmd",
-    "cmd_l": "cmd", "cmd_r": "cmd", "command_l": "cmd", "command_r": "cmd",
+    "cmd_l": "cmd_l", "command_l": "cmd_l", "meta_l": "cmd_l",
+    "cmd_r": "cmd_r", "command_r": "cmd_r", "meta_r": "cmd_r",
     "ctrl": "ctrl", "control": "ctrl", "ctl": "ctrl",
-    "ctrl_l": "ctrl", "ctrl_r": "ctrl",
-    "alt": "alt", "option": "alt", "opt": "alt",
-    "alt_l": "alt", "alt_r": "alt", "alt_gr": "alt",
-    "option_l": "alt", "option_r": "alt",
-    "shift": "shift", "shift_l": "shift", "shift_r": "shift",
+    "ctrl_l": "ctrl_l", "control_l": "ctrl_l",
+    "ctrl_r": "ctrl_r", "control_r": "ctrl_r",
+    "alt": "alt", "option": "alt", "opt": "alt", "alt_gr": "alt",
+    "alt_l": "alt_l", "option_l": "alt_l", "opt_l": "alt_l",
+    "alt_r": "alt_r", "option_r": "alt_r", "opt_r": "alt_r",
+    "shift": "shift", "shift_l": "shift_l", "shift_r": "shift_r",
     "space": "space", "spacebar": "space", "空格": "space", " ": "space",
     "esc": "esc", "escape": "esc", "return": "enter", "enter": "enter",
 }
 
-MODIFIER_KEYS = frozenset({"cmd", "ctrl", "alt", "shift", "fn"})
+# 通用修饰键名（左右归一）；组合键 / Carbon 注册用这些。
+_GENERIC_SIDE = {
+    "cmd_l": "cmd", "cmd_r": "cmd",
+    "ctrl_l": "ctrl", "ctrl_r": "ctrl",
+    "alt_l": "alt", "alt_r": "alt",
+    "shift_l": "shift", "shift_r": "shift",
+}
+
+MODIFIER_KEYS = frozenset({
+    "cmd", "ctrl", "alt", "shift", "fn",
+    "cmd_l", "cmd_r", "ctrl_l", "ctrl_r",
+    "alt_l", "alt_r", "shift_l", "shift_r",
+})
 
 # macOS 虚拟键码：单个修饰键在按下时只产生 flagsChanged 事件、没有对应的
 # keyDown keycode。要让「按一个 option/fn 就开始听写」生效，必须按虚拟键码
-# 逐个监听 flagsChanged 的边缘（松开→按下）。左右修饰键码不同，都列出来。
+# 逐个监听 flagsChanged 的边缘（松开→按下）。
+# 通用的 "alt"/"cmd" 等同时覆盖左右键码（组合键场景不区分）；左右独立的
+# "alt_l"/"alt_r" 只覆盖各自那一个键码（单键场景精确匹配）。
 MODIFIER_KEYCODES: dict[str, tuple[int, ...]] = {
-    "cmd": (54, 55),       # kVK_RightCommand / kVK_Command
-    "ctrl": (59, 62),      # kVK_Control / kVK_RightControl
-    "alt": (58, 61),       # kVK_Option / kVK_RightOption（Typeless 默认右 Option）
-    "shift": (56, 60),     # kVK_Shift / kVK_RightShift
-    "fn": (63,),           # kVK_Function
+    "cmd": (54, 55), "cmd_l": (55,), "cmd_r": (54,),       # 55=左 ⌘ 54=右 ⌘
+    "ctrl": (59, 62), "ctrl_l": (59,), "ctrl_r": (62,),    # 59=左 ⌃ 62=右 ⌃
+    "alt": (58, 61), "alt_l": (58,), "alt_r": (61,),       # 58=左 ⌥ 61=右 ⌥（Typeless 默认右 Option）
+    "shift": (56, 60), "shift_l": (56,), "shift_r": (60,), # 56=左 ⇧ 60=右 ⇧
+    "fn": (63,),                                           # 63=fn（无左右之分）
 }
 
 
@@ -124,6 +143,10 @@ def carbon_combo(combo: str) -> tuple[int, int] | None:
 
     返回 None 表示这个组合无法用系统热键注册（缺普通键、多个普通键、
     键名未知或没有修饰键），调用方应回退到 pynput。
+
+    组合键里的左右修饰键（alt_l/alt_r 等）归一到通用名（alt）——Carbon
+    RegisterEventHotKey 的 modifier mask 不区分左右，只有一个 optionKey 位。
+    单键场景（alt_l 作为独立热键）不走 carbon_combo，走 SingleKeyHotkeys。
     """
     keys = parse_combo(combo)
     plain = [k for k in keys if k not in MODIFIER_KEYS]
@@ -134,6 +157,7 @@ def carbon_combo(combo: str) -> tuple[int, int] | None:
         return None
     mods = 0
     for k in keys & MODIFIER_KEYS:
+        k = _GENERIC_SIDE.get(k, k)  # 组合键里左右归一（alt_l → alt）
         mods |= CARBON_MODIFIERS.get(k, 0)
     if not mods:  # 不允许把单个普通键注册成全局热键
         return None
@@ -320,8 +344,11 @@ _CG_FLAG_ALT = 1 << 19
 _CG_FLAG_SHIFT = 1 << 17
 _CG_FLAG_FN = 1 << 23
 _MOD_FLAG = {
-    "cmd": _CG_FLAG_CMD, "ctrl": _CG_FLAG_CTRL, "alt": _CG_FLAG_ALT,
-    "shift": _CG_FLAG_SHIFT, "fn": _CG_FLAG_FN,
+    "cmd": _CG_FLAG_CMD, "cmd_l": _CG_FLAG_CMD, "cmd_r": _CG_FLAG_CMD,
+    "ctrl": _CG_FLAG_CTRL, "ctrl_l": _CG_FLAG_CTRL, "ctrl_r": _CG_FLAG_CTRL,
+    "alt": _CG_FLAG_ALT, "alt_l": _CG_FLAG_ALT, "alt_r": _CG_FLAG_ALT,
+    "shift": _CG_FLAG_SHIFT, "shift_l": _CG_FLAG_SHIFT, "shift_r": _CG_FLAG_SHIFT,
+    "fn": _CG_FLAG_FN,
 }
 
 
@@ -551,11 +578,13 @@ class HotkeyManager:
     def _canonical(key) -> str:
         from pynput.keyboard import Key  # type: ignore
         if isinstance(key, Key):
-            return normalize_key(getattr(key, "name", None) or str(key))
+            name = normalize_key(getattr(key, "name", None) or str(key))
+            return _GENERIC_SIDE.get(name, name)  # pynput 回退只处理组合键，左右归一
         char = getattr(key, "char", None)
         if char:
             return "space" if char == " " else char.lower()
-        return normalize_key(str(key).strip("'"))
+        name = normalize_key(str(key).strip("'"))
+        return _GENERIC_SIDE.get(name, name)
 
     # ---- Carbon 后端：系统直接分发，按一次触发一次，不读取键盘流
     def _carbon_dispatch(self, index: int, pressed: bool) -> None:
@@ -759,4 +788,4 @@ class HotkeyManager:
 
 
 def default_combo(platform: str = sys.platform) -> str:
-    return "cmd+shift+space" if platform == "darwin" else "ctrl+shift+space"
+    return "option_l" if platform == "darwin" else "ctrl+shift+space"

@@ -236,8 +236,9 @@ def self_check(settings: Settings) -> int:
         print(f"{label}：{combo} · 系统热键映射：{mapping}")
     tap_ok, tap_detail = event_tap_available()
     print("全局键盘监听（单键热键/回退后端使用）：", "可用" if tap_ok else "不可用", "-", tap_detail)
-    print("说明：组合键（如 ⌘+Shift+空格）由 Carbon 注册、免授权；"
-          "单个按键（如 option、fn、单个字母）用系统事件监听、需输入监控授权。")
+    print("说明：组合键（如 ⌘+Shift+E）由 Carbon 注册、免授权；"
+          "单个修饰键（如左 Option、右 Option、fn）用系统事件监听、需输入监控授权。"
+          "默认听写键 = 左 Option（option_l）。")
     try:
         from pynput.keyboard import Listener  # noqa: F401
         print("键盘监听模块 pynput：随包可用")
@@ -409,10 +410,6 @@ class Controller:
         self.hotkeys.resume()
 
     def setup_hotkeys(self) -> str:
-        if getattr(self, "_hotkeys_suspended", False):
-            # 设置窗口打开期间「保存并应用」也会走到这里重建；挂起状态不注册，
-            # 否则录入框按下的组合会被全局热键抢先触发听写、录不进去。
-            return ""
         # macOS 把 ⌘+Shift+A 保留给系统，Carbon 注册会成功但永远不派发；
         # 老配置自动迁移到可用的 ⌘+Shift+E，避免「按了没反应」又出现一次。
         legacy = {
@@ -424,6 +421,9 @@ class Controller:
             if old in legacy:
                 self.settings.set(key, legacy[old])
                 log_note(f"快捷键 {key} 从 {old} 迁移到 {legacy[old]}（系统保留组合）")
+        # 无论是否 suspend 都要更新 bindings：设置窗口开着时保存配置，虽然
+        # 此时不能 start()（会抢录入框的按键），但必须把新 combo 写进 bindings，
+        # 这样关闭窗口 resume() → start() 时用的就是新配置，而非旧的。
         self.hotkeys.clear()
         dictate = self.settings.get("hotkey_dictate")
         ask = self.settings.get("hotkey_ask")
@@ -436,6 +436,9 @@ class Controller:
         else:
             self.hotkeys.register(dictate, lambda: self.session.sig_command.emit("toggle"))
         self.hotkeys.register(ask, lambda: self.session.sig_command.emit("ask"))
+        if getattr(self, "_hotkeys_suspended", False):
+            # 设置窗口开着：只更新 bindings 不注册，关闭时 resume 会 start()
+            return ""
         ok = self.hotkeys.start()
         return "" if ok else self.hotkeys.error
 
@@ -485,7 +488,7 @@ class Controller:
             self.session.sig_error.emit(
                 "麦克风权限未授权：已为您弹出系统授权框并打开「隐私与安全性 → 麦克风」。"
                 "请勾选「轻述 sayo」的开关（若列表里有多个同名条目，先把旧的删掉），"
-                "然后回到输入框重新按 ⌘ + Shift + 空格 听写。")
+                "然后回到输入框重新按 左 Option 听写。")
             return
         # 其他原因：设备被占用 / 蓝牙断开 / 无输入设备
         self.session.sig_error.emit(
@@ -797,13 +800,13 @@ def run_gui(settings: Settings) -> int:
         if healthy and carbon:
             summary = (
                 "系统级全局热键已生效，不需要「输入监控」授权，覆盖安装后也不会失效。\n\n"
-                "⌘ + Shift + 空格（键盘最下方那个空格键）：开始 / 结束听写\n"
+                "左 Option（键盘左下角的 Option 键）：开始 / 结束听写\n"
                 "⌘ + Shift + E：语音编辑选中文字\n\n"
                 "听写期间屏幕顶部会一直显示两样彼此独立的东西："
                 "上面一行实时文字，下面几条随音量变化的曲线；切换应用或桌面也不会消失。")
         elif healthy:
             summary = ("快捷键可用（回退到键盘监听后端）。\n\n"
-                       "⌘ + Shift + 空格 开始 / 结束听写，再按一次结束。")
+                       "左 Option 开始 / 结束听写，再按一次结束。")
         else:
             summary = (
                 "系统热键未能注册，所以按了没有反应。\n\n"
@@ -833,7 +836,7 @@ def run_gui(settings: Settings) -> int:
         elif clicked is b_fix:
             after = rebuild_hotkeys("诊断窗口点击重新启用")
             tray.showMessage(APP_NAME,
-                             "系统热键已重新注册，现在可以按 ⌘ + Shift + 空格" if after["healthy"]
+                             "系统热键已重新注册，现在可以按 左 Option 开始听写" if after["healthy"]
                              else "系统热键仍未注册，请更换组合键或在输入监控里授权回退监听",
                              QSystemTrayIcon.Information if after["healthy"] else QSystemTrayIcon.Warning,
                              6000)
@@ -1081,16 +1084,22 @@ def run_gui(settings: Settings) -> int:
                 QSystemTrayIcon.Information, 7000)
             guide_win.maybe_auto_show()
 
-    # 系统热键由 Carbon 注册，不需要输入监控。启动时只申请麦克风与辅助功能；
-    # 不再弹「输入监控」系统框、不打开系统设置、不在授权后重建监听。
+    # 组合键由 Carbon 注册免授权；单键（如左 Option）走 CGEventTap，需要输入监控。
+    # 默认听写键是左 Option（单键），所以启动时需要申请输入监控。
+    # 若用户改成组合键，则不需要这项授权。
+    from .platform.hotkey import is_single_modifier, is_single_plain_key
+    dictate_key = settings.get("hotkey_dictate", "")
+    ask_key = settings.get("hotkey_ask", "")
+    needs_input_monitoring = (is_single_modifier(dictate_key) or is_single_plain_key(dictate_key)
+                              or is_single_modifier(ask_key) or is_single_plain_key(ask_key))
     QTimer.singleShot(1500, lambda: permissions.request_all_async(
-        force=False, include_input_monitoring=False))
+        force=False, include_input_monitoring=needs_input_monitoring))
     QTimer.singleShot(8000, _post_start_check)
     if not settings.get("first_run_done", False):
         QTimer.singleShot(900, lambda: (activate_for_dialog(),
                                         quickstart.show(), quickstart.raise_()))
 
-    tray.showMessage(APP_NAME, "已就绪 · ⌘ + Shift + 空格 开始听写 · 完全离线",
+    tray.showMessage(APP_NAME, "已就绪 · 左 Option 开始听写 · 完全离线",
                      QSystemTrayIcon.Information, 4000)
     return app.exec()
 

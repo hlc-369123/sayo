@@ -97,3 +97,23 @@ def test_combo_from_event_maps_system_reserved_keys():
     assert combo_from_event(49, 0) == "space"                       # 单个普通键：合法
     assert combo_from_event(2, 0) == "d"                            # 单个字母：合法
     assert combo_from_event(999, CMD) is None                       # 未知键码：忽略
+
+
+def test_modcode_to_name_distinguishes_left_right_option():
+    """flagsChanged 录入时，左/右 Option 必须映射到不同的配置名。
+
+    回归：旧实现把 58 和 61 都映射到 "alt"，用户按左 Option 或右 Option
+    录入的都是 "alt"，无法区分（Typeless 默认右 Option，用户要求可区分）。
+    """
+    from app.platform.keycapture import _MODCODE_TO_NAME
+    # 58 = 左 Option，61 = 右 Option（macOS 虚拟键码）
+    assert _MODCODE_TO_NAME[58] == "alt_l"
+    assert _MODCODE_TO_NAME[61] == "alt_r"
+    # 左右 Command / Control / Shift 也各自独立
+    assert _MODCODE_TO_NAME[55] == "cmd_l"
+    assert _MODCODE_TO_NAME[54] == "cmd_r"
+    assert _MODCODE_TO_NAME[59] == "ctrl_l"
+    assert _MODCODE_TO_NAME[62] == "ctrl_r"
+    assert _MODCODE_TO_NAME[56] == "shift_l"
+    assert _MODCODE_TO_NAME[60] == "shift_r"
+    assert _MODCODE_TO_NAME[63] == "fn"

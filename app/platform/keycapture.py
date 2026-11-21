@@ -28,11 +28,17 @@ _CODE_TO_NAME: dict[int, str] = {}
 for _name, _code in KEYCODES.items():
     _CODE_TO_NAME.setdefault(_code, _name)
 
-# 修饰键虚拟键码 → 配置名（option/fn/cmd/…），用于单修饰键录入
-_MODCODE_TO_NAME: dict[int, str] = {}
-for _mname, _codes in MODIFIER_KEYCODES.items():
-    for _c in _codes:
-        _MODCODE_TO_NAME[_c] = _mname
+# 修饰键虚拟键码 → 配置名：按左 Option 录入 "alt_l"、按右 Option 录入 "alt_r"，
+# 这样用户可以精确设定只响应左 Option 或只响应右 Option（同 Typeless）。
+# 注意：必须用左右具体名覆盖通用名——如果 58 同时映射到 "alt" 和 "alt_l"，
+# 录入时就显示不了左右。这里直接硬编码，不依赖 MODIFIER_KEYCODES 的遍历顺序。
+_MODCODE_TO_NAME: dict[int, str] = {
+    55: "cmd_l", 54: "cmd_r",
+    59: "ctrl_l", 62: "ctrl_r",
+    58: "alt_l", 61: "alt_r",
+    56: "shift_l", 60: "shift_r",
+    63: "fn",
+}
 
 # 配置名 → CGEventFlags 位，用于判断修饰键是按下还是松开
 _FLAG_BY_MOD = {
