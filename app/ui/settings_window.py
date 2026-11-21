@@ -1,7 +1,7 @@
 """设置窗口：快捷键、识别参数、润色规则、个人词典、权限、离线状态。"""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
@@ -16,6 +16,7 @@ from ..core import accel
 from ..core.asr import ASREngine
 from ..platform import permissions
 from ..platform.hotkey import carbon_combo
+from ..platform.keycapture import KeyCapture
 from .themes import DEFAULT_THEME, get_theme, theme_items, ui_stylesheet
 
 POST_LABELS = [
@@ -90,8 +91,11 @@ def qt_combo(modifiers, key) -> str | None:
 class HotkeyEdit(QLineEdit):
     """快捷键录入框：点击聚焦后直接按下组合键即可录入，退格/删除/Esc 清空。
 
-    取代原来只能手打文本的 QLineEdit——用户期望「清空后按一下对应按键
-    就自动识别进去」，手打 cmd+shift+space 既不直观也容易拼错拼成无效组合。
+     macOS 上 cmd+space / cmd+shift+space 等被系统当作 Spotlight、输入法切换，
+    在事件分发到应用之前就消费掉，Qt 的 keyPressEvent 根本收不到——这正是
+    「清空后按组合键录不进去」的根因（实测：系统层能看到按键、Qt 收不到）。
+    因此聚焦时启用 KeyCapture（CGEventTap 系统层捕获）来录入，覆盖所有组合；
+    非 macOS / 捕获不可用时回退到普通 keyPressEvent + 手打兜底。
     """
 
     def __init__(self, combo: str = ""):
@@ -100,21 +104,38 @@ class HotkeyEdit(QLineEdit):
         self.setToolTip(
             "点击输入框，然后直接按下你想用的组合键（需含修饰键，"
             "如 cmd+shift+space、ctrl+alt+d）；按退格清空。")
+        self._capture = KeyCapture()
+        self._capture_enabled = False
+
+    def focusInEvent(self, event) -> None:
+        super().focusInEvent(event)
+        if self._capture.available():
+            # 回调来自 tap 的 runloop 线程：setText 走 queued 保证线程安全
+            self._capture_enabled = self._capture.start(self._on_captured)
+
+    def focusOutEvent(self, event) -> None:
+        self._capture.stop()
+        self._capture_enabled = False
+        super().focusOutEvent(event)
+
+    @Slot(str)
+    def _on_captured(self, combo: str) -> None:
+        self.setText(combo)  # combo=="" 表示清空
 
     def keyPressEvent(self, event) -> None:
+        # 系统层捕获生效时，按键已被 KeyCapture 处理；这里只兜底 macOS 捕获
+        # 不可用 / 非 macOS 的场景（手打文本 + 普通组合键）。
+        if self._capture_enabled:
+            return
         if event.key() in (Qt.Key_Backspace, Qt.Key_Delete, Qt.Key_Escape):
             self.clear()
             event.accept()
             return
         combo = qt_combo(event.modifiers(), event.key())
         if combo:
-            # 按下了「修饰键 + 普通键」组合：直接录入，取代原有内容
             self.setText(combo)
             event.accept()
             return
-        # 没有有效组合：交给父类正常处理，允许用户手打文本作为兜底
-        # （macOS 上个别系统保留组合键到不了控件，手打仍可设置；保存时
-        #  _save 会用 carbon_combo 校验，无效值照样被拒绝，不会改坏热键）
         super().keyPressEvent(event)
 
 

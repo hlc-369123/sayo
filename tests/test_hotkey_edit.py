@@ -19,6 +19,7 @@ from PySide6.QtGui import QKeyEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from app.ui.settings_window import HotkeyEdit, qt_combo  # noqa: E402
+from app.platform.keycapture import combo_from_event  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -80,3 +81,18 @@ def test_hotkey_edit_capture_vs_manual_typing(app):
     typed = QKeyEvent(QEvent.KeyPress, Qt.Key_A, m.NoModifier, "a")
     w.keyPressEvent(typed)
     assert w.text() == "a"
+
+
+def test_combo_from_event_maps_system_reserved_keys():
+    """系统层捕获的 (keycode, flags) 必须翻回可被 carbon_combo 注册的配置串。
+
+    回归：cmd+shift+space 被 macOS 提前消费，Qt keyPressEvent 收不到，
+    只能靠 CGEventTap 捕获原始 keycode(49) + flags 再翻译。
+    """
+    CMD, CTRL, ALT, SHIFT = 1 << 20, 1 << 18, 1 << 19, 1 << 17
+    assert combo_from_event(49, CMD | SHIFT) == "cmd+shift+space"  # space
+    assert combo_from_event(14, CMD | SHIFT) == "cmd+shift+e"      # e
+    assert combo_from_event(2, CTRL | ALT) == "ctrl+alt+d"         # d
+    assert combo_from_event(49, CMD) == "cmd+space"                # Spotlight 组合
+    assert combo_from_event(49, 0) is None                          # 裸键：忽略
+    assert combo_from_event(999, CMD) is None                       # 未知键码：忽略
