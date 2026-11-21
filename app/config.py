@@ -239,17 +239,10 @@ class Settings:
             self._data["organize_llm"] = False
             self._data["organize_default_migrated_v2"] = True
             self.save()
-        # 一次性迁移：听写快捷键从单键 option 迁移回 cmd+shift+space（Carbon 免授权）。
-        # macOS 系统限制：修饰键不产生 keyDown/keyUp 事件，flagsChanged 对真实
-        # 按键不投递（实测验证），单键 Option 不可靠。只迁移仍停留在旧单键
-        # 默认值的配置；用户自己改过的组合键保留不动。
-        if not self._data.get("hotkey_default_migrated_v3"):
-            cur = str(self._data.get("hotkey_dictate", "")).strip().lower()
-            if cur in ("option", "option_l", "option_r", "alt", "alt_l", "alt_r",
-                       "fn", "cmd", "shift"):
-                self._data["hotkey_dictate"] = DEFAULT_SETTINGS["hotkey_dictate"]
-            self._data["hotkey_default_migrated_v3"] = True
-            self.save()
+        # 旧版曾尝试把单键 option 强制迁移回组合键（误判单键不可靠）。
+        # 撤销该逻辑：用户可自由选择组合键或单键（含 option/fn），不强制改写。
+        # 仅保留 v3 标记键位，避免历史脏值；不再改写 hotkey_dictate。
+        self._data.setdefault("hotkey_default_migrated_v3", True)
         # 旧配置若停留在最早的「极光 aurora」且无 overlay_style 键，补上默认浮层样式，
         # 不再强制改主题（保留用户当时的视觉选择）。
         if "overlay_style" not in self._data:

@@ -352,6 +352,12 @@ _MOD_FLAG = {
 }
 
 
+# kCFRunLoopCommonCategories（CoreFoundation 常量 = 0）：PyObjC 的 Quartz
+# 命名空间没暴露它，但 CFRunLoopAddSource 的 mode 参数可直接传 0。common
+# categories 覆盖所有 runloop 模式，修饰键 flagsChanged 在 Qt 窗口忙时
+# （runloop 不在 DefaultMode）才可靠投递——这是单键热键不灵的核心根因。
+_CF_RUNLOOP_COMMON = 0
+
 class SingleKeyHotkeys:
     """监听「单个按键」热键（单个修饰键 or 单个普通键）。
 
@@ -372,6 +378,7 @@ class SingleKeyHotkeys:
         self._bindings: list = []       # [(index, combo)] 只含单键 binding
         self._mod_pressed: dict[str, bool] = {}
         self._plain_pressed: set[int] = set()
+        self._guard = None              # 后台健康守护线程
         self.error = ""
         self.count = 0
 
@@ -406,6 +413,20 @@ class SingleKeyHotkeys:
                 keycode = Quartz.CGEventGetIntegerValueField(
                     event, Quartz.kCGKeyboardEventKeycode)
                 flags = int(Quartz.CGEventGetFlags(event))
+                # 诊断：记录每个到达 tap 的事件，定位「按了没反应」
+                try:
+                    import time as _time
+                    import pathlib as _pl
+                    _log = _pl.Path.home() / "Library" / "Application Support" / "sayo" / "logs"
+                    _log.mkdir(parents=True, exist_ok=True)
+                    _et = {Quartz.kCGEventFlagsChanged: "flagsChanged",
+                            Quartz.kCGEventKeyDown: "keyDown",
+                            Quartz.kCGEventKeyUp: "keyUp"}.get(etype, str(etype))
+                    with (_log / "singletap.log").open("a") as _f:
+                        _f.write(f"{_time.strftime('%H:%M:%S')} {proxy and 'proxy' or 'direct'} "
+                                 f"{_et} keycode={keycode} flags=0x{flags:x}\n")
+                except Exception:
+                    pass
                 if etype == Quartz.kCGEventFlagsChanged:
                     for index, combo in self._bindings:
                         if not is_single_modifier(combo):
@@ -458,22 +479,94 @@ class SingleKeyHotkeys:
         )
         if not tap:
             self.error = "无法创建单键监听（输入监控未授权）"
+            try:
+                import pathlib as _pl
+                with (_pl.Path.home() / "Library/Application Support/sayo/logs/singletap.log").open("a") as _f:
+                    _f.write("TAP CREATE FAILED: 输入监控未授权\n")
+            except Exception:
+                pass
             return False
         source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
         runloop = Quartz.CFRunLoopGetCurrent()
-        Quartz.CFRunLoopAddSource(runloop, source, Quartz.kCFRunLoopDefaultMode)
+        # 关键：加到 kCFRunLoopCommonCategories（0），而非 DefaultMode。
+        # Qt 主循环在 macOS 上忙时不在 DefaultMode，修饰键 flagsChanged 只在
+        # common 模式下可靠投递。DefaultMode 导致「按了没反应」——这是单键热键
+        # 不灵的核心根因之一。
+        Quartz.CFRunLoopAddSource(runloop, source, _CF_RUNLOOP_COMMON)
         Quartz.CGEventTapEnable(tap, True)
+        try:
+            import pathlib as _pl
+            with (_pl.Path.home() / "Library/Application Support/sayo/logs/singletap.log").open("a") as _f:
+                _f.write(f"TAP OK: 单键 tap 创建成功，{len(single_bindings)} 个单键绑定 {single_bindings}\n")
+        except Exception:
+            pass
         self._tap = tap
         self._source = source
         self._runloop = runloop
         self.count = len(self._bindings)
+        # 启动后台健康守护：CGEventTap 在 TCC 状态变化 / runloop 被吞时会
+        # 被系统静默禁用（listen-only 尤其常见），导致「之前能按、之后没反应」。
+        # 每 2s 检查一次，被禁用就重新 enable 并记录。
+        self._guard_stop = threading.Event()
+        self._guard = threading.Thread(
+            target=self._guard_loop, daemon=True, name="single-tap-guard")
+        self._guard.start()
         return True
+
+    def _guard_loop(self) -> None:
+        import Quartz  # type: ignore
+        try:
+            import pathlib as _pl, time as _time
+            logf = _pl.Path.home() / "Library/Application Support/sayo/logs/singletap.log"
+        except Exception:
+            logf = None
+
+        def log(msg):
+            if logf:
+                try:
+                    with logf.open("a") as f:
+                        f.write(f"{_time.strftime('%H:%M:%S')} {msg}\n")
+                except Exception:
+                    pass
+
+        consecutive_disabled = 0
+        while not self._guard_stop.is_set():
+            tap = self._tap
+            if tap is None:
+                break
+            self._guard_stop.wait(2.0)
+            tap = self._tap
+            if tap is None:
+                break
+            try:
+                enabled = bool(Quartz.CGEventTapIsEnabled(tap))
+                if not enabled:
+                    consecutive_disabled += 1
+                    log(f"TAP 未启用（连续第{consecutive_disabled}次）")
+                    # 区分原因：用户输入导致禁用（正常）vs 权限/超时（需重新申请）
+                    # 简单重新 enable；若持续失败则提示用户重新授权输入监控
+                    Quartz.CGEventTapEnable(tap, True)
+                    if consecutive_disabled >= 4:
+                        log("TAP 持续未启用：输入监控授权可能失效（覆盖安装后需重新在"
+                            "系统设置→隐私与安全性→输入监控里勾选本应用）")
+                else:
+                    consecutive_disabled = 0
+            except Exception:
+                pass
 
     def _fire(self, index: int, pressed: bool) -> None:
         if self._dispatch:
             self._dispatch(index, pressed)
 
     def uninstall(self) -> None:
+        # 先停守护线程，再拆 tap
+        guard_stop = getattr(self, "_guard_stop", None)
+        if guard_stop is not None:
+            guard_stop.set()
+        guard = getattr(self, "_guard", None)
+        if guard is not None and guard.is_alive():
+            guard.join(timeout=1.0)
+        self._guard = None
         tap, source, runloop = self._tap, self._source, getattr(self, "_runloop", None)
         self._tap = None
         self._source = None
@@ -486,7 +579,7 @@ class SingleKeyHotkeys:
             import Quartz  # type: ignore
             Quartz.CGEventTapEnable(tap, False)
             if source is not None and runloop is not None:
-                Quartz.CFRunLoopRemoveSource(runloop, source, Quartz.kCFRunLoopDefaultMode)
+                Quartz.CFRunLoopRemoveSource(runloop, source, _CF_RUNLOOP_COMMON)
         except Exception:
             pass
 

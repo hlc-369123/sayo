@@ -17,7 +17,9 @@ import sys
 import threading
 from dataclasses import dataclass
 
-IOKIT_LISTEN_EVENT = 1        # kIOHIDRequestTypeListenEvent
+IOKIT_LISTEN_EVENT = 16       # kIOHIDAccessListenEvent（不是 1；用错值 1 会让 IOHIDCheckAccess
+                                # 误返回 0，从而误报「输入监控已授权」——这是单键热键不灵、
+                                # 系统持续禁用 tap 的根因之一）
 IOHID_ACCESS_GRANTED = 0      # kIOHIDAccessTypeGranted
 APP_SERVICES = "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
 IOKIT = "/System/Library/Frameworks/IOKit.framework/IOKit"

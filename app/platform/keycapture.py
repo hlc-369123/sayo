@@ -77,6 +77,10 @@ def combo_from_event(keycode: int, flags: int) -> str | None:
     return "+".join(mods + [plain]) if mods else plain
 
 
+# kCFRunLoopCommonCategories（CoreFoundation 常量 = 0），PyObjC Quartz 未暴露
+_CF_RUNLOOP_COMMON = 0
+
+
 class KeyCapture:
     """一次性的系统层组合键捕获器。
 
@@ -175,7 +179,7 @@ class KeyCapture:
                 return False
             source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
             runloop = Quartz.CFRunLoopGetCurrent()
-            Quartz.CFRunLoopAddSource(runloop, source, Quartz.kCFRunLoopDefaultMode)
+            Quartz.CFRunLoopAddSource(runloop, source, _CF_RUNLOOP_COMMON)
             Quartz.CGEventTapEnable(tap, True)
             self._tap = tap
             self._runloop_source = source
@@ -194,7 +198,7 @@ class KeyCapture:
             import Quartz
             Quartz.CGEventTapEnable(tap, False)
             if source is not None and runloop is not None:
-                Quartz.CFRunLoopRemoveSource(runloop, source, Quartz.kCFRunLoopDefaultMode)
+                Quartz.CFRunLoopRemoveSource(runloop, source, _CF_RUNLOOP_COMMON)
         except Exception:
             pass
 
