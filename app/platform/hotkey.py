@@ -788,4 +788,4 @@ class HotkeyManager:
 
 
 def default_combo(platform: str = sys.platform) -> str:
-    return "option_l" if platform == "darwin" else "ctrl+shift+space"
+    return "cmd+shift+space" if platform == "darwin" else "ctrl+shift+space"

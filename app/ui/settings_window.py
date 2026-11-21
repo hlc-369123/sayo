@@ -99,11 +99,11 @@ class HotkeyEdit(QLineEdit):
 
     def __init__(self, combo: str = ""):
         super().__init__(combo)
-        self.setPlaceholderText("点击此处后按键，如 ⌘+Shift+空格 或单个 左/右 Option")
+        self.setPlaceholderText("点击此处后按键，如 ⌘+Shift+空格 或单个 Option")
         self.setToolTip(
             "点击输入框，然后直接按下想用的组合键（cmd+shift+space、"
-            "ctrl+alt+d）或单个按键（左 Option、右 Option、fn、字母等，同 Typeless）；"
-            "按退格清空。左右 Option 是不同的键，可分别设为不同功能。")
+            "ctrl+alt+d）或单个按键（option、fn、字母等）；"
+            "按退格清空。组合键最可靠（免授权）；单键需输入监控授权。")
         self._capture = KeyCapture()
         self._capture_enabled = False
 
@@ -268,8 +268,8 @@ class SettingsWindow(QWidget):
         self.cb_theme.currentIndexChanged.connect(self._preview_theme)
         f.addRow("听写快捷键", self.ed_hotkey)
         f.addRow("Ask / 编辑快捷键", self.ed_hotkey_ask)
-        hint_left = QLabel("点击输入框后按键即可录入：组合键（⌘+Shift+空格）或单个键（左/右 Option / fn）；退格清空")
-        hint_right = QLabel("组合键免授权；单键需输入监控授权；保存后立即生效")
+        hint_left = QLabel("点击输入框后按键即可录入：组合键（⌘+Shift+空格）或单个键（Option / fn / 字母）；退格清空")
+        hint_right = QLabel("组合键免授权最可靠；单键需输入监控授权；保存后立即生效")
         hint_left.setWordWrap(True)
         hint_right.setWordWrap(True)
         hint_left.setAlignment(Qt.AlignVCenter)
@@ -798,8 +798,9 @@ class SettingsWindow(QWidget):
             QMessageBox.warning(
                 self, "快捷键无法注册",
                 "以下按键无法注册为热键：\n  · " + "\n  · ".join(bad)
-                + "\n\n请点击输入框后按下一个组合键（如 cmd+shift+space）"
-                  "或单个按键（如 左 Option、右 Option、fn、d），然后重新保存。"
+                + "\n\n组合键（如 cmd+shift+space）最可靠、免授权；"
+                  "单个按键（如 option、fn、d）需输入监控授权。"
+                  "请点击输入框后按下一个组合键，然后重新保存。"
                   "\n本次未保存，原有快捷键保持不变。")
             return
         self.settings.update({

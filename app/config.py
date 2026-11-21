@@ -95,10 +95,10 @@ AUDIO_DIR = user_data_dir() / "audio"
 
 DEFAULT_SETTINGS: dict = {
     # ---- 快捷键 ----
-    # 默认听写键 = 左 Option（单个修饰键，同 Typeless push-to-talk 风格）。
-    # 单键热键走 CGEventTap flagsChanged 监听，需「输入监控」授权；
-    # 组合键（如 Ask 键）走 Carbon 免授权注册，两者可并存。
-    "hotkey_dictate": "option_l" if sys.platform == "darwin" else "ctrl+shift+space",
+    # 默认听写键 = ⌘+Shift+空格（Carbon 系统热键，免授权、系统直接分发、100% 可靠）。
+    # 单键 Option 受 macOS 系统限制：修饰键不产生 keyDown/keyUp 事件，
+    # CGEventTap 的 flagsChanged 对真实按键不投递（实测验证），不可靠。
+    "hotkey_dictate": "cmd+shift+space" if sys.platform == "darwin" else "ctrl+shift+space",
     # ⌘+Shift+A 被 macOS 系统保留，Carbon 注册成功但不派发；用 E 代替
     "hotkey_ask": "cmd+shift+e" if sys.platform == "darwin" else "ctrl+shift+e",
     "push_to_talk": False,  # True = 按住说话、松开结束
@@ -239,11 +239,14 @@ class Settings:
             self._data["organize_llm"] = False
             self._data["organize_default_migrated_v2"] = True
             self.save()
-        # 一次性迁移：听写快捷键从 cmd+shift+space 迁移到 option_l（左 Option 单键）。
-        # 只迁移仍停留在旧默认值的配置；用户自己改过的键保留不动。
+        # 一次性迁移：听写快捷键从单键 option 迁移回 cmd+shift+space（Carbon 免授权）。
+        # macOS 系统限制：修饰键不产生 keyDown/keyUp 事件，flagsChanged 对真实
+        # 按键不投递（实测验证），单键 Option 不可靠。只迁移仍停留在旧单键
+        # 默认值的配置；用户自己改过的组合键保留不动。
         if not self._data.get("hotkey_default_migrated_v3"):
             cur = str(self._data.get("hotkey_dictate", "")).strip().lower()
-            if cur in ("cmd+shift+space", "ctrl+shift+space"):
+            if cur in ("option", "option_l", "option_r", "alt", "alt_l", "alt_r",
+                       "fn", "cmd", "shift"):
                 self._data["hotkey_dictate"] = DEFAULT_SETTINGS["hotkey_dictate"]
             self._data["hotkey_default_migrated_v3"] = True
             self.save()
