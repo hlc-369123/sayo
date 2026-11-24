@@ -98,6 +98,9 @@ class Recorder:
         self._block_rms: list[float] = []
         self._silent_checked = False
         self.auto_device_note = ""  # 自动绕开坏设备时的说明，供状态栏/日志使用
+        # 后台流关闭线程：(线程, 启动时间)。macOS 上 PortAudio 的 stop 可能与
+        # CoreAudio 的 IO 回调互锁，绝不能在 GUI 线程等它（详见 stop 的说明）。
+        self._closing: list[tuple[threading.Thread, float]] = []
 
     @property
     def recording(self) -> bool:
@@ -256,6 +259,7 @@ class Recorder:
     def start(self, device=None, *, force_probe: bool = False) -> None:
         if self._recording:
             return
+        self._check_stalled_close()
         try:
             import sounddevice as sd
         except ImportError as exc:
@@ -389,23 +393,61 @@ class Recorder:
                 return np.zeros(0, dtype=np.float32)
             return np.concatenate(self._chunks).astype(np.float32, copy=False)
 
+    # 判定「上一次流关闭卡死」的秒数：正常 stop/close 是毫秒级，
+    # 超过这个值说明 PortAudio 正卡在 CoreAudio 的 IO 锁上。
+    _CLOSE_STALL_SEC = 1.5
+
+    def _check_stalled_close(self) -> None:
+        """开流前检查上一次关闭是否卡死，避免 GUI 线程陪着一起阻塞。
+
+        macOS 上 PortAudio 的 stop 与 CoreAudio IO 回调可能互持对方锁：
+        一旦卡住，该线程永远拿不回来。此时若继续在 GUI 线程调用
+        sd.InputStream(...)/start()（同样要拿 PortAudio 内部锁），界面会
+        再次冻结。宁可明确报错让用户重启，也不要重演无响应。
+        """
+        now = time.monotonic()
+        if any(now - started > self._CLOSE_STALL_SEC
+               for _thread, started in self._closing):
+            raise RecorderError(
+                "音频设备正忙（上一次录音流未能正常关闭），请重启轻述 sayo 后重试")
+
     def stop(self) -> np.ndarray:
-        """停止录音并返回本机内存中的音频；返回后不再持有音频引用。"""
+        """停止录音并返回本机内存中的音频；返回后不再持有音频引用。
+
+        macOS 上在 GUI 线程同步调用 stream.stop() 会与 CoreAudio 的 IO
+        回调互锁（AB-BA 死锁，蓝牙设备切换时高发）：GUI 线程拿着
+        PortAudio 内部锁等 CoreAudio IO 锁，IO 回调拿着 IO 锁反过来等
+        PortAudio 锁。结果是整个界面冻结、静音也解不掉。
+        所以这里只做「标记停止 + 取数据」，阻塞的 stop/close 丢给守护
+        线程，GUI 线程立即返回，状态机和静音恢复照常往下走。
+        """
         self._recording = False
         if self._timer:
             self._timer.cancel()
             self._timer = None
-        if self._stream is not None:
-            try:
-                self._stream.stop()
-                self._stream.close()
-            except Exception:
-                pass
-            self._stream = None
         with self._lock:
             audio = np.concatenate(self._chunks) if self._chunks else np.zeros(0, dtype=np.float32)
             self._chunks = []
         audio = np.ascontiguousarray(audio, dtype=np.float32)
+
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            def _close_stream(s=stream):
+                try:
+                    s.stop()
+                    s.close()
+                except Exception:
+                    pass
+                finally:
+                    current = threading.current_thread()
+                    self._closing[:] = [
+                        item for item in self._closing if item[0] is not current
+                    ]
+
+            worker = threading.Thread(
+                target=_close_stream, name="sayo-stream-close", daemon=True)
+            self._closing.append((worker, time.monotonic()))
+            worker.start()
         # 增益统一交给识别前端 audio_gate.preprocess：那里会先判断是否真有语音，
         # 且把增益限制在 3 倍以内。旧版在这里无条件把峰值拉到 0.85，
         # 纯底噪曾被放大 17 倍，直接导致模型编出乱码句子。
