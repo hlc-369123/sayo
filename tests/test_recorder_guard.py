@@ -52,11 +52,21 @@ def _fake_stream_with_amps(monkeypatch, amps):
         def __init__(self, **kwargs):
             self.callback = kwargs["callback"]
             self.blocksize = kwargs["blocksize"]
+            self.finished_cb = kwargs.get("finished_callback")
 
         def start(self):
+            abort_cls = recorder_mod._CALLBACK_ABORT
             for amp in amps:
                 block = np.full((self.blocksize, 1), amp, dtype=np.float32)
-                self.callback(block, self.blocksize, None, None)
+                try:
+                    self.callback(block, self.blocksize, None, None)
+                except Exception:
+                    # callback 采够时长后抛 CallbackAbort 主动结束流
+                    if abort_cls is None:
+                        raise
+                    break
+            if self.finished_cb:
+                self.finished_cb()
 
         def stop(self):
             pass

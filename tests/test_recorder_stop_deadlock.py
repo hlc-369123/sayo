@@ -2,8 +2,11 @@
 
 现象（2026-11-24）：一次听写结束后 stream.stop() 永久阻塞，界面冻结、
 系统静音无法恢复。根因是 GUI 线程同步调 stream.stop()，与音频 IO 线程
-的 startStopCallback 互持锁。修复后 stop() 只标记 + 取数据，阻塞的关闭
-交给守护线程。
+的 startStopCallback 互持锁（PortAudio #1174）。
+
+根治方案（Mixxx PR #14208 已验证）：不直接 stop active 流，而是让 audio
+callback 抛 CallbackAbort 使流 inactive，等 finished_callback 后再 stop。
+本文件验证这条路径的顺序与非阻塞特性。
 """
 from __future__ import annotations
 
@@ -13,7 +16,8 @@ import time
 import numpy as np
 import pytest
 
-from app.core.recorder import Recorder, RecorderError
+from app.core import recorder as recorder_mod
+from app.core.recorder import Recorder
 
 
 def _recording_recorder():
@@ -22,96 +26,118 @@ def _recording_recorder():
     rec._recording = True
     rec._chunks = [np.full(100, 0.5, dtype=np.float32),
                    np.full(50, 0.25, dtype=np.float32)]
+    rec._start_event_pair_for_test()
     return rec
 
 
-def test_stop_returns_immediately_when_stream_close_blocks():
-    """流的 stop() 永久阻塞时，recorder.stop() 必须在极短时间内返回。"""
+class _FakeStream:
+    """可控的假流：stop 阻塞由 gate 决定；finished 由 fire_finished 触发。"""
+
+    def __init__(self, gate: threading.Event | None = None):
+        self.gate = gate
+        self.stop_calls = 0
+        self.close_calls = 0
+        self.abort_calls = 0
+        self.stopped_before_inactive = False
+        self._inactive = False
+
+    def fire_finished(self):
+        self._inactive = True
+
+    def abort(self):
+        self.abort_calls += 1
+
+    def stop(self):
+        self.stop_calls += 1
+        if not self._inactive:
+            self.stopped_before_inactive = True
+        if self.gate is not None:
+            self.gate.wait(timeout=5.0)
+
+    def close(self):
+        self.close_calls += 1
+
+
+def test_start_creates_fresh_events_per_session():
+    """每轮录音用全新 Event，避免上一轮的后台关闭线程被本轮 clear 干扰。"""
+    rec = Recorder({})
+    rec._start_event_pair_for_test()
+    first_stop, first_inactive = rec._stop_event, rec._inactive_event
+    rec._start_event_pair_for_test()
+    assert rec._stop_event is not first_stop
+    assert rec._inactive_event is not first_inactive
+    assert not rec._stop_event.is_set()
+
+
+def test_stop_signals_callback_and_returns_immediately():
+    """stop 只设标志+取数据，不等流关闭（GUI 不冻结）。"""
     rec = _recording_recorder()
-    gate = threading.Event()   # 模拟底层死锁：stop() 永远等不到
-
-    class BlockingStream:
-        def stop(self):
-            gate.wait(timeout=5.0)
-
-        def close(self):
-            gate.wait(timeout=5.0)
-
-    rec._stream = BlockingStream()
+    gate = threading.Event()
+    rec._stream = _FakeStream(gate)
     try:
         started = time.monotonic()
         audio = rec.stop()
         elapsed = time.monotonic() - started
-        # 若仍是同步 stop，这里要等满 5 秒；修复后应在毫秒级返回
         assert elapsed < 0.5, f"stop() 阻塞了 {elapsed:.2f}s，GUI 会被冻结"
         assert audio.shape == (150,), "数据必须在关闭流之前就交给调用方"
         assert np.isclose(audio[0], 0.5) and np.isclose(audio[-1], 0.25)
         assert rec._stream is None
         assert not rec._recording
-    finally:
-        gate.set()   # 放行守护线程，避免测试进程残留
-
-
-def test_worker_thread_is_tracked_and_cleaned():
-    """关闭任务进守护线程，正常结束后要从待关列表移除。"""
-    rec = _recording_recorder()
-
-    class FastStream:
-        def stop(self):
-            pass
-
-        def close(self):
-            pass
-
-    rec._stream = FastStream()
-    rec.stop()
-    # 等守护线程跑完
-    deadline = time.monotonic() + 2.0
-    while rec._closing and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert rec._closing == [], "已结束的关闭线程不应残留在列表里"
-
-
-def test_stalled_close_blocks_next_start_without_hanging():
-    """上一次关闭卡死时，下一次开流要快速报错，而不是在 GUI 线程陪着卡。"""
-    rec = Recorder({})
-    gate = threading.Event()
-
-    class BlockingStream:
-        def stop(self):
-            gate.wait(timeout=5.0)
-
-        def close(self):
-            pass
-
-    rec._recording = True
-    rec._stream = BlockingStream()
-    try:
-        rec.stop()
-        # 伪造一个「已经卡了很久」的时间戳，避免测试真的 sleep 1.5 秒
-        thread, started = rec._closing[0]
-        rec._closing[0] = (thread, started - Recorder._CLOSE_STALL_SEC - 1)
-
-        started_at = time.monotonic()
-        with pytest.raises(RecorderError, match="重启"):
-            rec.start(device=0)
-        assert time.monotonic() - started_at < 0.5
+        assert rec._stop_event.is_set(), "必须通知 callback 抛 CallbackAbort"
     finally:
         gate.set()
 
 
-def test_normal_stop_then_start_does_not_false_positive():
-    """正常关闭后紧接着重开（静音流重试路径），不能被误判成卡死。"""
+def test_callback_raises_abort_when_stop_requested():
+    """callback 见到停止标志后抛 CallbackAbort，促使流 inactive。"""
     rec = _recording_recorder()
+    rec._stop_event.set()
+    if recorder_mod._CALLBACK_ABORT is None:
+        pytest.skip("本环境无 sounddevice")
+    with pytest.raises(recorder_mod._CALLBACK_ABORT):
+        rec._callback(np.zeros((10, 1), dtype=np.float32), 10, None, None)
 
-    class FastStream:
-        def stop(self):
-            pass
 
-        def close(self):
-            pass
+def test_background_thread_waits_for_inactive_before_stopping():
+    """守护线程必须等 finished_callback 之后才 stop（顺序正确=不死锁）。"""
+    rec = _recording_recorder()
+    stream = _FakeStream()
+    rec._stream = stream
+    rec._INACTIVE_WAIT_SEC = 5.0
 
-    rec._stream = FastStream()
     rec.stop()
-    # 只验证检查本身不抛错；不真的开流（那要 sounddevice/设备）
-    rec._check_stalled_close()
+    # finished 未触发前，后台线程应仍在等待，不应调用 stop
+    time.sleep(0.15)
+    assert stream.stop_calls == 0, "finished 未触发前不应调用 stop"
+
+    # 模拟 finished_callback 触发
+    stream.fire_finished()
+    rec._inactive_event.set()
+
+    deadline = time.monotonic() + 2.0
+    while (stream.stop_calls == 0 or stream.close_calls == 0) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert stream.stop_calls == 1 and stream.close_calls == 1
+    assert not stream.stopped_before_inactive, "stop 发生在流 inactive 之前，会死锁"
+    assert stream.abort_calls == 0
+
+
+def test_fallback_aborts_if_finished_never_comes():
+    """finished 迟迟不来（设备被拔）时走 abort 兜底，且不影响 GUI。"""
+    rec = _recording_recorder()
+    stream = _FakeStream()
+    rec._stream = stream
+    rec._INACTIVE_WAIT_SEC = 0.1
+
+    rec.stop()
+    deadline = time.monotonic() + 2.0
+    while stream.abort_calls == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert stream.abort_calls == 1, "finished 超时后应 abort 兜底"
+    assert stream.stop_calls == 1 and stream.close_calls == 1
+
+
+def test_no_user_facing_restart_error_path():
+    """根治版不应再有旧版开流前的「请重启」兜底。"""
+    rec = _recording_recorder()
+    assert not hasattr(rec, "_check_stalled_close")

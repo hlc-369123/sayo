@@ -17,6 +17,13 @@ import numpy as np
 
 from ..config import AUDIO_DIR, CHANNELS, SAMPLE_RATE
 
+# 延迟取 CallbackAbort：sounddevice 是可选运行依赖，导入失败时退化为「不再
+# 采集」，由 stop() 的 finished 等待/兜底保证不死锁。
+try:
+    from sounddevice import CallbackAbort as _CALLBACK_ABORT  # type: ignore
+except Exception:  # pragma: no cover - 无 PortAudio 的环境（构建/部分测试）
+    _CALLBACK_ABORT = None
+
 # ---- 输入设备健康探测 ----------------------------------------------------
 # 真实麦克风即使环境安静，每个音频块也有连续底噪（rms≈0.001~0.02）；
 # 断流的蓝牙链路 / 失效的虚拟声卡则是「大部分块精确为 0 + 零星爆音」。
@@ -42,17 +49,24 @@ def probe_input_device(index: int, seconds: float = _PROBE_SECONDS) -> float | N
     try:
         import sounddevice as sd
         blocks: list[float] = []
+        inactive = threading.Event()
 
         def cb(indata, frames, time_info, status):
             a = np.asarray(indata[:, 0], dtype=np.float32)
             blocks.append(float(np.sqrt(np.mean(a ** 2))) if a.size else 0.0)
+            # 采够时长后从 callback 内部结束流：不在探测线程直接调
+            # stream.stop()（active 流 stop 会与 CoreAudio IO 回调互锁）。
+            if len(blocks) * 0.05 >= seconds and _CALLBACK_ABORT is not None:
+                raise _CALLBACK_ABORT
 
         stream = sd.InputStream(
             samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="float32",
-            blocksize=int(SAMPLE_RATE * 0.05), device=index, callback=cb)
+            blocksize=int(SAMPLE_RATE * 0.05), device=index, callback=cb,
+            finished_callback=inactive.set)
         stream.start()
-        time.sleep(seconds)
-        stream.stop()
+        # 等 callback 自己把流置为 inactive，再 close（此时不会阻塞）。
+        # 超时兜底：设备无响应时不能无限等探测。
+        inactive.wait(seconds + 1.0)
         stream.close()
     except Exception:
         return None
@@ -98,9 +112,14 @@ class Recorder:
         self._block_rms: list[float] = []
         self._silent_checked = False
         self.auto_device_note = ""  # 自动绕开坏设备时的说明，供状态栏/日志使用
-        # 后台流关闭线程：(线程, 启动时间)。macOS 上 PortAudio 的 stop 可能与
-        # CoreAudio 的 IO 回调互锁，绝不能在 GUI 线程等它（详见 stop 的说明）。
-        self._closing: list[tuple[threading.Thread, float]] = []
+        # ---- 无死锁停流状态 --------------------------------------------
+        # macOS 上直接调 stream.stop()/Pa_StopStream 会与 CoreAudio IO 线程
+        # 的 startStopCallback 互锁（PortAudio #1174）。正确顺序是：让音频
+        # callback 抛 CallbackAbort → 等 finished_callback（流变 inactive，
+        # 此时 stop() 保证不阻塞）→ 再 stop/close。
+        self._stop_event = threading.Event()      # 通知 callback 该退出了
+        self._inactive_event = threading.Event()  # finished_callback 触发
+        self._INACTIVE_WAIT_SEC = 2.0             # 等 finished 的兜底秒数
 
     @property
     def recording(self) -> bool:
@@ -256,10 +275,20 @@ class Recorder:
         finally:
             _PROBE_LOCK.release()
 
+    def _start_event_pair_for_test(self) -> None:
+        """换一对全新的停流 Event。
+
+        每轮录音都是独立生命周期：上一轮 stop() 的守护线程持有旧 Event，
+        换新的保证它不会被本轮 clear() 干扰而空等。测试也可直接调用它来
+        构造录音中状态，不依赖真实硬件。
+        """
+        self._stop_event = threading.Event()
+        self._inactive_event = threading.Event()
+
     def start(self, device=None, *, force_probe: bool = False) -> None:
         if self._recording:
             return
-        self._check_stalled_close()
+        self._start_event_pair_for_test()
         try:
             import sounddevice as sd
         except ImportError as exc:
@@ -295,6 +324,7 @@ class Recorder:
                 blocksize=int(SAMPLE_RATE * 0.05),  # 50ms
                 device=device,
                 callback=self._callback,
+                finished_callback=self._on_stream_finished,
             )
             self._stream.start()
         except Exception as exc:
@@ -304,7 +334,8 @@ class Recorder:
                     self._stream = sd.InputStream(
                         samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="float32",
                         blocksize=int(SAMPLE_RATE * 0.05), device=None,
-                        callback=self._callback)
+                        callback=self._callback,
+                        finished_callback=self._on_stream_finished)
                     self._stream.start()
                     device = None
                 except Exception as exc2:
@@ -324,7 +355,21 @@ class Recorder:
             pass
         self._start_guard()
 
+    def _on_stream_finished(self) -> None:
+        """PortAudio 在流变 inactive 时调用（此时再 stop() 不会阻塞）。
+
+        这是绕过 CoreAudio 死锁的关键信号：不主动调 Pa_StopStream 去等 IO
+        线程，而是让 callback 抛 CallbackAbort 促使流自行结束。
+        """
+        self._inactive_event.set()
+
     def _callback(self, indata, frames, time_info, status) -> None:
+        # 请求停止后，从 callback 内部返回 paAbort：PortAudio 会尽快让流
+        # inactive 并回调 finished_callback。绝不在 GUI 线程直接 stop 流。
+        if self._stop_event.is_set():
+            if _CALLBACK_ABORT is not None:
+                raise _CALLBACK_ABORT
+            return
         if not self._recording:
             return
         audio = np.asarray(indata[:, 0], dtype=np.float32).copy()
@@ -393,38 +438,27 @@ class Recorder:
                 return np.zeros(0, dtype=np.float32)
             return np.concatenate(self._chunks).astype(np.float32, copy=False)
 
-    # 判定「上一次流关闭卡死」的秒数：正常 stop/close 是毫秒级，
-    # 超过这个值说明 PortAudio 正卡在 CoreAudio 的 IO 锁上。
-    _CLOSE_STALL_SEC = 1.5
-
-    def _check_stalled_close(self) -> None:
-        """开流前检查上一次关闭是否卡死，避免 GUI 线程陪着一起阻塞。
-
-        macOS 上 PortAudio 的 stop 与 CoreAudio IO 回调可能互持对方锁：
-        一旦卡住，该线程永远拿不回来。此时若继续在 GUI 线程调用
-        sd.InputStream(...)/start()（同样要拿 PortAudio 内部锁），界面会
-        再次冻结。宁可明确报错让用户重启，也不要重演无响应。
-        """
-        now = time.monotonic()
-        if any(now - started > self._CLOSE_STALL_SEC
-               for _thread, started in self._closing):
-            raise RecorderError(
-                "音频设备正忙（上一次录音流未能正常关闭），请重启轻述 sayo 后重试")
-
     def stop(self) -> np.ndarray:
         """停止录音并返回本机内存中的音频；返回后不再持有音频引用。
 
-        macOS 上在 GUI 线程同步调用 stream.stop() 会与 CoreAudio 的 IO
-        回调互锁（AB-BA 死锁，蓝牙设备切换时高发）：GUI 线程拿着
-        PortAudio 内部锁等 CoreAudio IO 锁，IO 回调拿着 IO 锁反过来等
-        PortAudio 锁。结果是整个界面冻结、静音也解不掉。
-        所以这里只做「标记停止 + 取数据」，阻塞的 stop/close 丢给守护
-        线程，GUI 线程立即返回，状态机和静音恢复照常往下走。
+        macOS 上直接调 stream.stop()/Pa_StopStream 会与 CoreAudio IO 线程
+        的 startStopCallback 互锁（PortAudio #1174）：流还 active 时，GUI
+        线程拿着 PortAudio 内部锁等 CoreAudio IO 锁，IO 回调拿着 IO 锁反过
+        来等 PortAudio 锁，界面永久冻结、静音也解不掉。
+
+        根治办法（Mixxx PR #14208 已验证，5000 次启停无死锁）：
+          1) 这里只标记停止 + 取数据，GUI 线程立即返回；
+          2) 音频 callback 见到停止标志后抛 CallbackAbort，让 PortAudio
+             自己把流置为 inactive，触发 finished_callback；
+          3) 后台线程等 inactive 后再 stop()/close()——文档保证流 inactive
+             时 stop() 不会阻塞，从根上避开互锁，无需用户重启。
         """
         self._recording = False
         if self._timer:
             self._timer.cancel()
             self._timer = None
+        # 通知音频 callback 抛 CallbackAbort（不在这里碰 PortAudio 的锁）
+        self._stop_event.set()
         with self._lock:
             audio = np.concatenate(self._chunks) if self._chunks else np.zeros(0, dtype=np.float32)
             self._chunks = []
@@ -432,21 +466,27 @@ class Recorder:
 
         stream, self._stream = self._stream, None
         if stream is not None:
+            inactive = self._inactive_event
+
             def _close_stream(s=stream):
+                # 等流变 inactive：此时 Pa_StopStream 不再需要 IO 线程配合，
+                # 不会触发那组互锁。超时兜底仅应对设备已拔、callback 停摆。
+                if not inactive.wait(self._INACTIVE_WAIT_SEC):
+                    # finished 没来：多半是设备已断开。abort 比 stop 更少
+                    # 触碰待排空缓冲，作为兜底更不容易卡；都在守护线程里，
+                    # 即使极端情况卡住也不会冻结界面。
+                    try:
+                        s.abort()
+                    except Exception:
+                        pass
                 try:
                     s.stop()
                     s.close()
                 except Exception:
                     pass
-                finally:
-                    current = threading.current_thread()
-                    self._closing[:] = [
-                        item for item in self._closing if item[0] is not current
-                    ]
 
             worker = threading.Thread(
                 target=_close_stream, name="sayo-stream-close", daemon=True)
-            self._closing.append((worker, time.monotonic()))
             worker.start()
         # 增益统一交给识别前端 audio_gate.preprocess：那里会先判断是否真有语音，
         # 且把增益限制在 3 倍以内。旧版在这里无条件把峰值拉到 0.85，
