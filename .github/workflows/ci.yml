@@ -25,7 +25,8 @@ jobs:
       - name: Unit tests
         env:
           SAYO_DATA: ${{ runner.temp }}/sayo-test
-        run: python -m pytest -q tests --basetemp=${{ runner.temp }}/pytest
+        # 模型权重不进仓库；真实 ASR 用例需本地模型，CI 跳过（本地验证请用 scripts/verify_offline.py）
+        run: python -m pytest -q tests --deselect=tests/test_audio_gate.py::test_asr_still_transcribes_real_speech --basetemp=${{ runner.temp }}/pytest
 
       - name: Offline source audit
         run: |

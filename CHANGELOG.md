@@ -4,7 +4,7 @@
 
 - 历史问题 Issue 已按「问题发生时间从早到晚」重建编号（#18–#34）：最新的死锁问题现在是 #34，默认排序下排在最上方；原 #1–#17 保留为归档记录。
 - 新增 GitHub Traffic 本地归档脚本（`scripts/github_traffic_local.py`）。
-- 补齐 Issue / PR 模板、贡献指南、安全策略与 CI；CI 运行器使用 `macos-15-intel`。
+- 补齐 Issue / PR 模板、贡献指南、安全策略与 CI；CI 使用 `macos-15-intel`，跳过需本地模型的真实 ASR 用例（本地仍可跑 `scripts/verify_offline.py`）。
 - 为 Release 安装包补充 `.sha256` 校验文件，统一 README 与 Release 文案。
 - 将第三方组件许可从 `LICENSE` 拆分到 `THIRD_PARTY_NOTICES.md`。
 
