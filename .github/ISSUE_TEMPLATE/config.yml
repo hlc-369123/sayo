@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用手册
+    url: https://github.com/hlc-369123/sayo/blob/main/docs/使用手册.md
+    about: 安装、权限、快捷键与故障排查先看这里
+  - name: 开发指南
+    url: https://github.com/hlc-369123/sayo/blob/main/docs/开发指南.md
+    about: 从源码运行、构建、测试与离线分发

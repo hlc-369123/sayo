@@ -19,14 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-随包组件各自许可证（运行时一并分发）：
-
-- sherpa-onnx        : Apache-2.0 (k2-fsa)
-- SenseVoiceSmall    : Apache-2.0 (iic / FunAudioLLM)
-- Silero VAD         : MIT
-- PySide6 / Qt       : LGPL / GPL（商业使用请遵循 Qt 条款）
-- PortAudio          : MIT
-- pynput / pyperclip / pypinyin : 各自开源许可

@@ -4,6 +4,13 @@
   <img src="assets/icon.png" alt="轻述 sayo" width="180">
 </p>
 
+<p align="center">
+  <a href="https://github.com/hlc-369123/sayo/actions/workflows/ci.yml"><img src="https://github.com/hlc-369123/sayo/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/hlc-369123/sayo/releases"><img src="https://img.shields.io/github/v/release/hlc-369123/sayo" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="#运行环境要求"><img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="Platform: macOS"></a>
+</p>
+
 <p align="center"><em>Speak naturally. Write effortlessly. · 说得自然，写得轻松。</em></p>
 
 > 在任意应用里按一下快捷键就说话，语音**立刻**变成「能直接发出去的文字」并写入光标处。
@@ -116,15 +123,17 @@ Python 解释器、推理库、Qt 都随 `.app` / EXE 打包。
 
 ### A. 拿到「安装包」（最省事，推荐普通用户）
 
-推荐分发 **`轻述 sayo-1.0.0-macos.zip`**：**一个文件即完整交付**，解压后含
-`轻述 sayo.app`（应用）、`install_models.command`（首次下载模型）、`使用手册.md`（安装与使用说明）。
-其他形态：单独的 `.app` / `sayo-1.0.0-macos.dmg` / `.pkg`（Windows 的 ZIP / EXE、Linux 的 tar.gz）。
-**直接用，不需要开发环境。**
+正式版 `v1.0.0` 提供两种 macOS 安装包，**直接用，不需要开发环境**：
 
-> **GitHub 仓库只存源码**：`.app`、DMG、ZIP 等二进制产物在 `.gitignore` 中被忽略，不进仓库。
-> 官方安装包发布在 **Releases** 页面：<https://github.com/hlc-369123/sayo/releases>。
-> 安装包**不含模型**，zip 约 62 MB；下载后双击解压，把「轻述 sayo」拖进「应用程序」，
-> 校验值见同名 `.sha256` 文件。模型用 zip 里附带的脚本下载，见下面「第 0 步」。
+- **[DMG](https://github.com/hlc-369123/sayo/releases/download/v1.0.0/sayo-1.0.0-macos.dmg)**（约 74.5 MB）：双击挂载 → 拖进「应用程序」。[校验文件](https://github.com/hlc-369123/sayo/releases/download/v1.0.0/sayo-1.0.0-macos.dmg.sha256)
+- **[PKG](https://github.com/hlc-369123/sayo/releases/download/v1.0.0/sayo-1.0.0-macos.pkg)**（约 65 MB）：双击按向导安装到 `/Applications`。[校验文件](https://github.com/hlc-369123/sayo/releases/download/v1.0.0/sayo-1.0.0-macos.pkg.sha256)
+
+Windows / Linux 目前请从源码构建，见「[二次开发与构建](#二次开发与构建简述)」。
+
+> **GitHub 仓库只存源码**：`.app`、DMG、PKG 等二进制产物在 `.gitignore` 中被忽略，不进仓库。
+> 官方安装包统一发布在 **[Releases v1.0.0](https://github.com/hlc-369123/sayo/releases/tag/v1.0.0)**。
+> 安装包**不含模型**；下载后可用 `shasum -a 256 -c <文件名>.sha256` 校验。
+> 模型用仓库里的 `scripts/install_models.command` 下载一次，见下面「第 0 步」。
 
 - **macOS**
   - DMG：双击挂载 → 把「轻述 sayo」拖进「应用程序」。
@@ -132,12 +141,11 @@ Python 解释器、推理库、Qt 都随 `.app` / EXE 打包。
   - 未公证的版本（ad-hoc 签名）首次启动若被拦截：右键 → 打开，或
     系统设置 → 隐私与安全性 → 仍要打开。
   - 气密 / 断网环境：用仓库里的 `scripts/install_offline_macos.sh` 从 U 盘直接装（去 quarantine + 自动清理旧授权记录）。
-- **Windows**：解压 ZIP 到任意目录双击 `sayo.exe`；或运行 Inno Setup 生成的 `setup.exe`。
-- **Linux**：`tar -xzf sayo-*.tar.gz && ./sayo/sayo`，无需 root。
+- **Windows / Linux**：当前未提供正式安装包，请按 [`docs/开发指南.md`](docs/开发指南.md) 从源码构建。
 
 #### 第 0 步：下载语音模型（仅第一次，需联网）
 
-双击解压出来的 `install_models.command`（或仓库里的 `scripts/install_models.command`），
+运行仓库里的 `scripts/install_models.command`（也可从 [Releases 单独下载](https://github.com/hlc-369123/sayo/releases/download/v1.0.0/install_models.command)），
 它会把 int8 模型、词表、VAD 下载到 `~/Library/Application Support/sayo/models/` 并逐个校验 SHA-256，
 约 240 MB。想要 fp32 全精度：`./install_models.command --full`（再下约 940 MB）。
 
@@ -285,10 +293,9 @@ tests/                单元测试与语音样本（约 90+ 项）
 
 ## 许可与安全
 
-- 应用代码以 **MIT** 许可证发布（见 `LICENSE`）。
-- 随包组件各自许可证：sherpa-onnx（Apache-2.0）、SenseVoiceSmall（Apache-2.0）、
-  Silero VAD（MIT）、PySide6/Qt（LGPL/GPL，商业使用请遵循 Qt 条款）、
-  PortAudio / pynput / pyperclip / pypinyin（各自开源许可）。
+- 应用代码以 **MIT** 许可证发布（见 [`LICENSE`](LICENSE)）。
+- 随包第三方组件的许可证汇总见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)；
+  其中 Qt 为 LGPL/GPL，商业使用请遵循 Qt 条款。
 - **隐私**：无任何数据离开本机。所有历史、设置、可选录音仅存于用户目录，可手动导出 / 清空。
 - 上游模型下载地址**只出现在下载脚本中**（`scripts/fetch_models.sh` / `scripts/install_models.command`），
   **运行时代码不引用任何外部地址**。
