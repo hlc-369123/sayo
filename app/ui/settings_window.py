@@ -1,7 +1,7 @@
 """设置窗口：快捷键、识别参数、润色规则、个人词典、权限、离线状态。"""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import Qt, Signal, Slot, QObject
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
@@ -97,21 +97,29 @@ class HotkeyEdit(QLineEdit):
     非 macOS / 捕获不可用时回退到普通 keyPressEvent + 手打兜底。
     """
 
+    # 跨线程中转信号：KeyCapture 在 pump 线程回调，emit 后 Qt 自动排队到主线程，
+    # 保证 setText 安全（直接函数调用跨线程会被 Qt 丢弃）。
+    _captured = Signal(str)
+
     def __init__(self, combo: str = ""):
         super().__init__(combo)
         self.setPlaceholderText("点击此处后按键，如 ⌘+Shift+空格 或单个 Option")
         self.setToolTip(
             "点击输入框，然后直接按下想用的组合键（cmd+shift+space、"
             "ctrl+alt+d）或单个按键（option、fn、字母等）；"
-            "按退格清空。组合键最可靠（免授权）；单键需输入监控授权。")
+            "按退格清空。组合键最可靠（免授权）；单键需辅助功能+输入监控授权。")
         self._capture = KeyCapture()
         self._capture_enabled = False
+        self._captured.connect(self._on_captured)
 
     def focusInEvent(self, event) -> None:
         super().focusInEvent(event)
         if self._capture.available():
-            # 回调来自 tap 的 runloop 线程：setText 走 queued 保证线程安全
-            self._capture_enabled = self._capture.start(self._on_captured)
+            self._capture_enabled = self._capture.start(self._emit_captured)
+
+    def _emit_captured(self, combo: str) -> None:
+        """KeyCapture 回调（可能来自 pump 线程）：经 Qt 信号排队到主线程。"""
+        self._captured.emit(combo)
 
     def focusOutEvent(self, event) -> None:
         self._capture.stop()
@@ -120,16 +128,36 @@ class HotkeyEdit(QLineEdit):
 
     @Slot(str)
     def _on_captured(self, combo: str) -> None:
-        self.setText(combo)  # combo=="" 表示清空
+        # 跨线程调用：tap 在 pump 线程触发，setText 必须在 Qt 主线程。
+        try:
+            import pathlib
+            from datetime import datetime
+            logdir = pathlib.Path.home() / "Library/Application Support/sayo/logs"
+            logdir.mkdir(parents=True, exist_ok=True)
+            with (logdir / "kc.log").open("a", encoding="utf-8") as f:
+                f.write(f"{datetime.now().strftime('%H:%M:%S')} _on_captured combo={combo!r}\n")
+        except Exception:
+            pass
+        if combo:
+            # 录入到组合键/单键：显示。保持监听，可退格清空后重按重录。
+            self.setText(combo)
+        else:
+            # 清空（退格/删除/Esc）：清空文本并复位状态机 _fired，
+            # 让退格后重按 Option 能立即录入（否则 _fired 残留吞事件）。
+            self.clear()
+            self._capture.reset_fired()
 
     def keyPressEvent(self, event) -> None:
-        # 系统层捕获生效时，按键已被 KeyCapture 处理；这里只兜底 macOS 捕获
-        # 不可用 / 非 macOS 的场景（手打文本 + 普通组合键）。
-        if self._capture_enabled:
-            return
+        # 退格/删除/Esc：即使在系统捕获模式下也允许清空（Bug 修复：之前 capture
+        # 模式吞了退格，必须点别的框再回来才能删）。清空后保持焦点，等继续录入。
         if event.key() in (Qt.Key_Backspace, Qt.Key_Delete, Qt.Key_Escape):
             self.clear()
+            # 复位 KeyCapture 状态机，让退格清空后重按能立即录入
+            self._capture.reset_fired()
             event.accept()
+            return
+        if self._capture_enabled:
+            # 系统层捕获生效时，普通/组合键已被 KeyCapture 处理
             return
         combo = qt_combo(event.modifiers(), event.key())
         if combo:

@@ -196,6 +196,125 @@ def run_cli(settings: Settings, wav: str | None = None) -> int:
                 pass
 
 
+def run_key_diagnosis(settings: Settings) -> int:
+    """在真实 sayo app 进程内诊断快捷键链路（权限 / tap / 真实事件）。
+
+    分四步，每步打印原始状态，定位问题到底在哪一环：
+      1) 输入监控权限（IOHIDCheckAccess 原始返回值，正确请求类型 = 1）
+      2) CGEventTap 能否创建 + 是否启用
+      3) 安装 tap 后，监听真实按键事件（请手动按 左/右 Option / a 键）
+      4) 汇总诊断
+    不修改任何业务逻辑，只读 + 监听，用于把根因锁定到具体环节。
+    """
+    import ctypes
+    import time
+    import sys
+    import threading
+
+    print("=" * 60)
+    print("快捷键链路诊断（真实 app 进程内执行）")
+    print("=" * 60)
+
+    # ---- 1) 输入监控权限（正确请求类型 = 1）----
+    IOKIT = "/System/Library/Frameworks/IOKit.framework/IOKit"
+    print("\n[1] 输入监控权限 IOHIDCheckAccess：")
+    try:
+        lib = ctypes.cdll.LoadLibrary(IOKIT)
+        for rt in (1, 16):
+            lib.IOHIDCheckAccess.argtypes = [ctypes.c_uint32]
+            lib.IOHIDCheckAccess.restype = ctypes.c_uint32
+            status = int(lib.IOHIDCheckAccess(rt))
+            meaning = {0: "Granted(已授权)", 1: "Denied(拒绝)", 2: "Unknown(未决定)"}
+            print(f"    IOHIDCheckAccess(request_type={rt}) = {status} = {meaning.get(status, '未知值')}")
+    except Exception as exc:
+        print(f"    查询失败: {exc}")
+    print("    → 正确请求类型是 1；若 IOHIDCheckAccess(1)=0 说明输入监控【已授权】")
+
+    # ---- 2) CGEventTap 创建 + 启用 ----
+    print("\n[2] CGEventTap 创建与启用：")
+    try:
+        import Quartz
+    except Exception as exc:
+        print(f"    无法导入 Quartz: {exc}")
+        return 1
+    mask = (Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged)
+            | Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
+            | Quartz.CGEventMaskBit(Quartz.kCGEventKeyUp))
+    received = []
+
+    def on_event(proxy, etype, event, refcon):
+        try:
+            keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
+            flags = int(Quartz.CGEventGetFlags(event))
+            tname = {Quartz.kCGEventFlagsChanged: "flagsChanged",
+                     Quartz.kCGEventKeyDown: "keyDown",
+                     Quartz.kCGEventKeyUp: "keyUp"}.get(etype, str(etype))
+            received.append((tname, keycode, flags))
+        except Exception:
+            pass
+        return event
+
+    tap = Quartz.CGEventTapCreate(
+        Quartz.kCGSessionEventTap, Quartz.kCGHeadInsertEventTap,
+        Quartz.kCGEventTapOptionListenOnly, mask, on_event, None)
+    print(f"    CGEventTapCreate = {'成功' if tap else '失败(None)'}")
+    if tap:
+        Quartz.CGEventTapEnable(tap, True)
+        print(f"    CGEventTapIsEnabled(刚启用后) = {Quartz.CGEventTapIsEnabled(tap)}")
+    else:
+        print("    tap 创建失败 → 输入监控可能未授权；单键监听无法工作。")
+        return 1
+
+    # ---- 关键：tap 放独立线程跑该线程自己的 runloop（与主线程 Qt 循环解耦）----
+    tap_thread = threading.Thread(target=lambda: _pump_tap(tap, mask, on_event, received),
+                                  daemon=True, name="diag-tap-thread")
+
+    import time as _time
+    # 让 tap 线程安装 source 并跑 8 秒
+    def _pump_tap(t, m, cb, out):
+        import Quartz as _Q
+        import time as _T
+        source = _Q.CFMachPortCreateRunLoopSource(None, t, 0)
+        runloop = _Q.CFRunLoopGetCurrent()
+        _Q.CFRunLoopAddSource(runloop, source, 0)  # CommonCategories
+        print(f"    tap 线程 runloop 已挂载，enabled={_Q.CGEventTapIsEnabled(t)}")
+        for _ in range(80):
+            _Q.CFRunLoopRunInMode(0, 0.1, True)
+        _Q.CGEventTapEnable(t, False)
+        _Q.CFRunLoopRemoveSource(runloop, source, 0)
+
+    tap_thread.start()
+    _time.sleep(1)
+
+    # ---- 3) 监听真实按键 ----
+    print("\n[3] 现在请真实按键（约 8 秒窗口，每次按下→松开都记一次）：")
+    print("    - 左 Option 按 2 次")
+    print("    - 右 Option 按 2 次")
+    print("    - 按 a 键 1 次")
+    print("    开始…")
+    tap_thread.join(timeout=10)
+
+    print(f"\n[4] 诊断汇总：共收到 {len(received)} 个键盘事件")
+    left_opt = [r for r in received if r[0] == "flagsChanged" and r[1] == 58]
+    right_opt = [r for r in received if r[0] == "flagsChanged" and r[1] == 61]
+    a_key = [r for r in received if r[0] in ("keyDown", "keyUp") and r[1] == 0]
+    print(f"    左 Option flagsChanged: {len(left_opt)}")
+    print(f"    右 Option flagsChanged: {len(right_opt)}")
+    print(f"    a 键 keyDown/Up:      {len(a_key)}")
+    print("    原始事件（前 12 条）：")
+    for tname, keycode, flags in received[:12]:
+        print(f"      [{tname}] keycode={keycode} flags=0x{flags:x}")
+    print("\n判定：")
+    if a_key and not left_opt:
+        print("    ✓ 普通键能收到、✗ 修饰键 flagsChanged 收不到 → 问题在修饰键事件投递")
+    elif left_opt:
+        print("    ✓ 修饰键 flagsChanged 能收到 → 底层监听正常，问题在上层状态机/注册")
+    elif not a_key and not left_opt:
+        print("    ✗ 连普通键都收不到 → tap 未真正工作（权限/runloop 问题）")
+    print("\n诊断完成。")
+    return 0
+
+
 def self_check(settings: Settings) -> int:
     from .core import accel
     from .core.offline import audit_source
@@ -1113,8 +1232,12 @@ def main(argv=None) -> int:
     parser.add_argument("--self-check", action="store_true", help="环境与离线约束自检")
     parser.add_argument("--benchmark", action="store_true", help="CPU/GPU × fp32/int8 本机实测")
     parser.add_argument("--bench-file", help="基准测试使用的本机 wav")
+    parser.add_argument("--diagnose-keys", action="store_true",
+                        help="在真实 app 进程内诊断快捷键链路（权限/ tap / 真实事件），需手动按键")
     args = parser.parse_args(argv)
     settings = Settings()
+    if args.diagnose_keys:
+        return run_key_diagnosis(settings)
     if args.self_check:
         return self_check(settings)
     if args.benchmark:

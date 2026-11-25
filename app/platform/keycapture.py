@@ -20,6 +20,19 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
+from datetime import datetime
+
+def _kc_log(msg: str) -> None:
+    """KeyCapture 诊断日志（仅用于定位，生产可移除）。"""
+    try:
+        import pathlib
+        logdir = pathlib.Path.home() / "Library/Application Support/sayo/logs"
+        logdir.mkdir(parents=True, exist_ok=True)
+        with (logdir / "kc.log").open("a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().strftime('%H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
 
 # 虚拟键码 → 键名，复用热键模块的权威映射（只取每个键码的第一个名字）
 from .hotkey import KEYCODES, MODIFIER_KEYCODES
@@ -44,6 +57,12 @@ _MODCODE_TO_NAME: dict[int, str] = {
 _FLAG_BY_MOD = {
     "cmd": 1 << 20, "ctrl": 1 << 18, "alt": 1 << 19,
     "shift": 1 << 17, "fn": 1 << 23,
+    # 左右独立名：共享对应的通用修饰键 flag（左右 Option 都看 ALT 位，
+    # 左右 Shift 都看 SHIFT 位…）。缺这些键名会导致 down 永远判 False。
+    "cmd_l": 1 << 20, "cmd_r": 1 << 20,
+    "ctrl_l": 1 << 18, "ctrl_r": 1 << 18,
+    "alt_l": 1 << 19, "alt_r": 1 << 19,
+    "shift_l": 1 << 17, "shift_r": 1 << 17,
 }
 
 # CGEventFlags 修饰键位
@@ -97,6 +116,8 @@ class KeyCapture:
         self._runloop_source = None
         self._lock = threading.Lock()
         self._fired = False  # 已录入到一个完整组合，防止按键 auto-repeat 重复触发
+        self._mod_candidates: list = []
+        self._saw_plain = False
 
     @staticmethod
     def available() -> bool:
@@ -109,8 +130,20 @@ class KeyCapture:
             import Quartz
         except ImportError:
             return False
+        # 关键修复：每次 start 都【彻底重建】，不复用旧 tap。
+        # 旧实现 `if self._tap is not None: return True` 会复用旧 tap，但其
+        # on_event 闭包里的状态机（_fired/_mod_candidates）可能残留 _fired=True
+        # （上次录入完 stop 时没清），导致 `if self._fired: return` 吞掉后续
+        # 所有 Option 事件 → 表现为「按一次成功、删掉重按失败、切焦点再回来才行」。
+        # 每次重建 = 全新干净状态，根治。
         with self._lock:
             if self._tap is not None:
+                # 已有活跃 tap：复用（录入后不 stop，tap 持续到失焦）。
+                # 只更新回调与状态，避免每次 start 都重建导致 TCC/tap 抖动。
+                self._callback = callback
+                self._fired = False
+                self._mod_candidates = []
+                self._saw_plain = False
                 return True
             self._callback = callback
             self._fired = False
@@ -124,6 +157,7 @@ class KeyCapture:
                     event, Quartz.kCGKeyboardEventKeycode)
                 flags = int(Quartz.CGEventGetFlags(event))
                 cb = self._callback
+                _kc_log(f"事件 etype={etype} keycode={keycode} flags={flags:#x}")
 
                 if etype == Quartz.kCGEventFlagsChanged:
                     # 单个修饰键（option/fn/cmd/…）：keycode 直接标识被改变的修饰键
@@ -143,7 +177,9 @@ class KeyCapture:
                             combo = "+".join(self._mod_candidates)
                             self._fired = True
                             cb(combo)
-                            self.stop()
+                            # 不 stop：保持监听，用户可退格清空后重按重录；
+                            # tap 在输入框失焦（focusOut）时才 stop。
+                            self._mod_candidates = []
                         self._mod_candidates.clear()
                     return event
 
@@ -151,8 +187,10 @@ class KeyCapture:
                     return event
 
                 if keycode == _ESC_CODE or keycode in _CLEAR_CODES:
-                    # 退格/删除/Esc：清空后继续等待录入，不停止捕获
+                    # 退格/删除/Esc：清空并复位状态机，继续监听等待重录
+                    self._fired = False
                     self._saw_plain = True
+                    self._mod_candidates = []
                     if cb:
                         cb("")
                     return event
@@ -163,44 +201,130 @@ class KeyCapture:
                 if combo and cb:
                     self._fired = True
                     cb(combo)
-                    self.stop()  # 录入到一个完整组合/单键，立即停止监听
+                    # 不 stop：保持监听，退格清空后可重按重录（失焦时 stop）
                 return event
 
+            # 关键修复（2026-11-22 对照实验实证）：
+            # 1) listen-only tap 收不到 Option(58/61) 等敏感修饰键的
+            #    flagsChanged（macOS 安全分级），必须用 active 模式（opts=0，需辅助功能）。
+            # 2) kCGEventMaskForAllEvents 在此 PyObjC/系统下实测收 0 事件，
+            #    必须用精确掩码 keyDown|keyUp|flagsChanged。
+            # active 模式 handler 必须返回原 event 放行（on_event 已 return event）。
+            mask = (Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
+                    | Quartz.CGEventMaskBit(Quartz.kCGEventKeyUp)
+                    | Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged))
             tap = Quartz.CGEventTapCreate(
                 Quartz.kCGSessionEventTap,
                 Quartz.kCGHeadInsertEventTap,
-                Quartz.kCGEventTapOptionListenOnly,
-                Quartz.kCGEventMaskForAllEvents,
+                0,  # active 模式（非 ListenOnly）
+                mask,
                 on_event,
                 None,
             )
+            _kc_log(f"KeyCapture tap 创建: {'OK' if tap else 'FAIL'} active模式 掩码={mask:#x}")
             if not tap:
                 self._callback = None
                 return False
             source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
-            runloop = Quartz.CFRunLoopGetCurrent()
-            Quartz.CFRunLoopAddSource(runloop, source, _CF_RUNLOOP_COMMON)
+            # 关键修复（2026-11-22 实测）：tap 在专用线程泵自己的 runloop，
+            # 否则主线程 Qt 忙时收不到事件（退格清空/单键录入全部失效）。
+            self._stop_pump = threading.Event()
+            self._pump = None
+            if source is not None:
+                self._pump = threading.Thread(
+                    target=self._pump_loop, args=(tap, source,),
+                    daemon=True, name="keycapture-pump")
+                self._pump.start()
             Quartz.CGEventTapEnable(tap, True)
             self._tap = tap
             self._runloop_source = source
-            self._runloop = runloop
+            self._runloop = None
             return True
+
+    def _pump_loop(self, tap, source) -> None:
+        """专用线程泵 runloop，让 KeyCapture 的 tap 持续接收事件。
+
+        与 SingleKeyHotkeys 相同模式（ChatGPT 诊断器实证可行）。
+        额外：定期自检 tap 是否仍 enabled（TCC 辅助功能未就绪时 tap 会被系统
+        静默禁用 → 表现为「第一次录不上、重开才行」）。被禁用就重新 enable，
+        让首次聚焦也能成功，无需重开界面。
+        """
+        try:
+            import Quartz
+            cur = Quartz.CFRunLoopGetCurrent()
+            if cur is not None and source is not None:
+                Quartz.CFRunLoopAddSource(cur, source, _CF_RUNLOOP_COMMON)
+        except Exception:
+            pass
+        last_check = 0.0
+        last_enabled = True
+        while not self._stop_pump.is_set():
+            try:
+                import Quartz
+                Quartz.CFRunLoopRunInMode(_CF_RUNLOOP_COMMON, 0.2, True)
+                # 每 1.5s 自检一次 tap 启用状态；被禁用就重新 enable
+                now = time.monotonic()
+                if now - last_check > 1.5:
+                    last_check = now
+                    try:
+                        enabled = bool(Quartz.CGEventTapIsEnabled(tap))
+                        if not enabled and last_enabled:
+                            _kc_log("tap 被禁用，重新 enable（TCC 未就绪常见）")
+                            Quartz.CGEventTapEnable(tap, True)
+                            _kc_log(f"重新 enable 结果: {Quartz.CGEventTapIsEnabled(tap)}")
+                        last_enabled = bool(Quartz.CGEventTapIsEnabled(tap))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            time.sleep(0.01)
+        try:
+            import Quartz
+            cur = Quartz.CFRunLoopGetCurrent()
+            if cur is not None and source is not None:
+                Quartz.CFRunLoopRemoveSource(cur, source, _CF_RUNLOOP_COMMON)
+        except Exception:
+            pass
 
     def stop(self) -> None:
         with self._lock:
-            tap, source, runloop = self._tap, self._runloop_source, getattr(self, "_runloop", None)
+            tap = self._tap
             self._tap = None
             self._runloop_source = None
             self._callback = None
+            # 关键：彻底复位状态机，避免脏状态（尤其 _fired=True）残留到下次 start
+            self._fired = False
+            self._mod_candidates = []
+            self._saw_plain = False
+            pump = getattr(self, "_pump", None)
+            stop_pump = getattr(self, "_stop_pump", None)
+        if stop_pump is not None:
+            stop_pump.set()
+        if pump is not None and pump.is_alive():
+            pump.join(timeout=1.0)
+        self._pump = None
         if tap is None:
             return
         try:
             import Quartz
             Quartz.CGEventTapEnable(tap, False)
-            if source is not None and runloop is not None:
-                Quartz.CFRunLoopRemoveSource(runloop, source, _CF_RUNLOOP_COMMON)
+        except Exception:
+            pass
+        try:
+            import Quartz
+            Quartz.CFMachPortInvalidate(tap)
         except Exception:
             pass
 
     def is_active(self) -> bool:
         return self._tap is not None
+
+    def reset_fired(self) -> None:
+        """复位「已录入」标志。退格清空后调用，让重按能立即录入。
+
+        否则 _fired=True 残留会吞掉后续所有事件（表现为「录一次删掉重按
+        失效、必须切焦点重建 tap 才行」）。线程安全。
+        """
+        with self._lock:
+            self._fired = False
+            self._mod_candidates = []

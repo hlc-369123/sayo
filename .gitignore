@@ -25,6 +25,7 @@ llm-models/
 *.tmp
 *.log
 logs/
+stats/traffic/
 
 # ---- 系统 / 编辑器 ----
 .DS_Store

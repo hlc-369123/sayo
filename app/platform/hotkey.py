@@ -469,30 +469,33 @@ class SingleKeyHotkeys:
                 pass  # C 回调绝不能抛异常
             return event
 
+        # 关键（2026-11-22 对照实验实证）：Option(58/61) 是「敏感修饰键」，
+        # macOS 对 listen-only tap 屏蔽它的 flagsChanged 事件（listen-only 收 0
+        # 事件）；只有 active 模式 tap（opts=0，需辅助功能授权）能收到
+        # flagsChanged keycode=58/61。因此单键热键必须用 active 模式 + 辅助功能。
+        # active 模式 handler 必须返回原 event 放行（on_event 已 return event）。
         tap = Quartz.CGEventTapCreate(
             Quartz.kCGSessionEventTap,
             Quartz.kCGHeadInsertEventTap,
-            Quartz.kCGEventTapOptionListenOnly,
+            0,  # active 模式（非 ListenOnly）
             mask,
             on_event,
             None,
         )
         if not tap:
-            self.error = "无法创建单键监听（输入监控未授权）"
+            self.error = "无法创建单键监听（辅助功能/输入监控未授权）"
             try:
                 import pathlib as _pl
                 with (_pl.Path.home() / "Library/Application Support/sayo/logs/singletap.log").open("a") as _f:
-                    _f.write("TAP CREATE FAILED: 输入监控未授权\n")
+                    _f.write("TAP CREATE FAILED: 辅助功能未授权（单键热键 active tap 需辅助功能）\n")
             except Exception:
                 pass
             return False
-        source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
-        runloop = Quartz.CFRunLoopGetCurrent()
-        # 关键：加到 kCFRunLoopCommonCategories（0），而非 DefaultMode。
-        # Qt 主循环在 macOS 上忙时不在 DefaultMode，修饰键 flagsChanged 只在
-        # common 模式下可靠投递。DefaultMode 导致「按了没反应」——这是单键热键
-        # 不灵的核心根因之一。
-        Quartz.CFRunLoopAddSource(runloop, source, _CF_RUNLOOP_COMMON)
+        # 主线程不建 source：source 必须在「泵 runloop 的线程」里创建并挂载，
+        # 否则事件不投递（实测：主线程建 source 不挂 → 按键全无）。
+        # 由 pump 线程独家建 source 并泵它的 runloop。
+        source = None
+        runloop = None
         Quartz.CGEventTapEnable(tap, True)
         try:
             import pathlib as _pl
@@ -504,6 +507,21 @@ class SingleKeyHotkeys:
         self._source = source
         self._runloop = runloop
         self.count = len(self._bindings)
+
+        # 关键修复（2026-11-22 实测验证）：tap 必须在「专用线程」里跑
+        # CFRunLoopGetCurrent() + CFRunLoopRunInMode 循环驱动。Qt 主线程忙时
+        # 修饰键 flagsChanged 收不到。ChatGPT 诊断器已实证此模式能捕获
+        # 左右 Option(58/61)、Fn(63)、普通字母等全部真实键盘事件。
+        #
+        # 注意：tap 是在主线程创建的，但它已 enable 且 source 已加入主线程
+        # runloop；pump 线程只负责在主线程 runloop 之外持续泵事件——
+        # 由于 CGEventTap 是进程级（不绑定线程），任何线程泵 runloop 都能
+        # 收到事件。这里 pump 线程泵「自己的」当前 runloop（tap 是进程级，
+        # source 已挂到主 runloop 也会被事件驱动）。
+        self._stop_pump = threading.Event()
+        self._pump = threading.Thread(
+            target=self._pump_loop, daemon=True, name="single-tap-pump")
+        self._pump.start()
         # 启动后台健康守护：CGEventTap 在 TCC 状态变化 / runloop 被吞时会
         # 被系统静默禁用（listen-only 尤其常见），导致「之前能按、之后没反应」。
         # 每 2s 检查一次，被禁用就重新 enable 并记录。
@@ -512,6 +530,50 @@ class SingleKeyHotkeys:
             target=self._guard_loop, daemon=True, name="single-tap-guard")
         self._guard.start()
         return True
+
+    def _pump_loop(self) -> None:
+        """专用线程泵 runloop：让 CGEventTap 事件持续投递。
+
+        实测（2026-11-22 ChatGPT 诊断器验证）：tap 是进程级对象，事件会投递到
+        持有其 runloop source 的线程；在专用线程泵自己的 runloop 也能驱动事件流。
+        用有界 slice + 检查 stop 标志，保证 uninstall 时线程可干净退出。
+        """
+        import Quartz  # type: ignore
+        try:
+            import pathlib as _pl
+            logf = _pl.Path.home() / "Library/Application Support/sayo/logs/singletap.log"
+        except Exception:
+            logf = None
+
+        def log(msg: str) -> None:
+            if logf:
+                try:
+                    with logf.open("a") as f:
+                        f.write(f"{__import__('time').strftime('%H:%M:%S')} {msg}\n")
+                except Exception:
+                    pass
+
+        log("pump 线程启动")
+        # 专用线程有自己的 runloop；把 tap 的 source 也挂到这个 runloop，
+        # 确保本线程泵时能驱动事件（tap 是进程级，多 runloop 都能驱动）。
+        tap = self._tap
+        if tap is not None:
+            try:
+                src = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
+                cur = Quartz.CFRunLoopGetCurrent()
+                if src is not None and cur is not None:
+                    Quartz.CFRunLoopAddSource(cur, src, _CF_RUNLOOP_COMMON)
+                    log("pump 线程: source 已挂到本线程 runloop")
+            except Exception as exc:
+                log(f"pump 线程挂 source 失败: {exc}")
+
+        while not self._stop_pump.is_set():
+            try:
+                Quartz.CFRunLoopRunInMode(_CF_RUNLOOP_COMMON, 0.2, True)
+            except Exception:
+                time.sleep(0.05)
+            time.sleep(0.01)
+        log("pump 线程退出")
 
     def _guard_loop(self) -> None:
         import Quartz  # type: ignore
@@ -529,6 +591,7 @@ class SingleKeyHotkeys:
                 except Exception:
                     pass
 
+        last_enabled = None
         consecutive_disabled = 0
         while not self._guard_stop.is_set():
             tap = self._tap
@@ -540,17 +603,26 @@ class SingleKeyHotkeys:
                 break
             try:
                 enabled = bool(Quartz.CGEventTapIsEnabled(tap))
-                if not enabled:
-                    consecutive_disabled += 1
-                    log(f"TAP 未启用（连续第{consecutive_disabled}次）")
-                    # 区分原因：用户输入导致禁用（正常）vs 权限/超时（需重新申请）
-                    # 简单重新 enable；若持续失败则提示用户重新授权输入监控
-                    Quartz.CGEventTapEnable(tap, True)
-                    if consecutive_disabled >= 4:
-                        log("TAP 持续未启用：输入监控授权可能失效（覆盖安装后需重新在"
-                            "系统设置→隐私与安全性→输入监控里勾选本应用）")
-                else:
+                # 只在状态变化时记录，避免每秒刷屏
+                if enabled != last_enabled:
+                    if enabled:
+                        log(f"TAP 已启用（tap={tap}）")
+                        consecutive_disabled = 0
+                    else:
+                        log("TAP 处于未启用状态")
+                    last_enabled = enabled
+                if enabled:
                     consecutive_disabled = 0
+                else:
+                    consecutive_disabled += 1
+                    # 仅在刚变为未启用时重新 enable 一次；持续未启用（≥3 次）
+                    # 说明输入监控未授权——反复 enable 无效，只提示一次。
+                    if consecutive_disabled == 1:
+                        Quartz.CGEventTapEnable(tap, True)
+                    elif consecutive_disabled == 3:
+                        log("TAP 持续未启用：说明输入监控未授权。请打开 系统设置→"
+                            "隐私与安全性→输入监控，勾选『轻述 sayo』，然后重启本应用。"
+                            "未授权时单键热键（如 Option）不会工作，但组合键（如 ⌘+Shift+空格）不受影响。")
             except Exception:
                 pass
 
@@ -559,7 +631,14 @@ class SingleKeyHotkeys:
             self._dispatch(index, pressed)
 
     def uninstall(self) -> None:
-        # 先停守护线程，再拆 tap
+        # 先停泵线程和守护线程，再拆 tap
+        pump_stop = getattr(self, "_stop_pump", None)
+        if pump_stop is not None:
+            pump_stop.set()
+        pump = getattr(self, "_pump", None)
+        if pump is not None and pump.is_alive():
+            pump.join(timeout=1.0)
+        self._pump = None
         guard_stop = getattr(self, "_guard_stop", None)
         if guard_stop is not None:
             guard_stop.set()
