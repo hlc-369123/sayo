@@ -151,9 +151,21 @@ Python 解释器、推理库、Qt 都随 `.app` / EXE 打包。
 
 #### 第 0 步：下载语音模型（仅第一次，需联网）
 
-运行仓库里的 `scripts/install_models.command`（也可从 [Releases 单独下载](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/install_models.command)），
+**双击**仓库里的 `scripts/install_models.command`（也可从 [Releases 单独下载](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/install_models.command)），
 它会把 int8 模型、词表、VAD 下载到 `~/Library/Application Support/sayo/models/` 并逐个校验 SHA-256，
-约 240 MB。想要 fp32 全精度：`./install_models.command --full`（再下约 940 MB）。
+约 240 MB。**这一步只需双击，不用输入任何命令**，日常听写这样就够了。
+
+**可选：要不要装「全精度模型」？**（看不懂可直接跳过，默认就够用）
+
+- 默认装的是 int8 轻量模型（约 240 MB）。全精度（fp32，约 940 MB）保留完整识别细节，在**轻声、长句、嘈杂环境**下更稳、更少错字；代价是**多下约 700 MB、占用更多内存**。
+- 两者不用二选一：装了全精度后，也能在「设置 → 识别 → 权重精度」里随时切回 int8。
+- 确实需要全精度时**才需要敲命令**：打开「终端」（Command + 空格 搜「终端」），把 `install_models.command` 文件**拖进终端窗口**（路径会自动填好），在后面临一个空格加 `--full`，回车执行：
+
+  ```bash
+  /路径/到/install_models.command --full
+  ```
+
+  下载中断后重复同样命令会自动续传；下载慢可在命令前加 `HF_MIRROR=https://huggingface.co` 换源。
 
 - 下载脚本是独立进程，**应用本身永不联网**；完成后可断网长期使用。
 - 模型放在用户目录，覆盖安装 / 升级应用不会丢，也不用往只读的 `.app` 里写文件。
