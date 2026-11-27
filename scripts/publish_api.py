@@ -205,6 +205,8 @@ def main():
     ap.add_argument("--prerelease", action="store_true", default=False,
                     help="新建 Release 时标为预发布（不会进「最新正式版」，安装脚本也就找不到它）")
     ap.add_argument("--yes-merge", action="store_true", help="提交后直接合并进 base 分支")
+    ap.add_argument("--allow-delete", action="store_true",
+                    help="允许这次推送删除远程文件（默认拒绝：本地没同步到的上游新文件会被误判成删除）")
     ap.add_argument("--force-ref", action="store_true",
                     help="分支不是 base 的后代时强制覆盖（基线已前进、需要把分支重建在新基线上时用）")
     ap.add_argument("--token", default=os.environ.get("GITHUB_TOKEN", ""))
@@ -240,6 +242,16 @@ def main():
         print("  -", p)
     if skipped:
         print(f"  · 另有 {len(skipped)} 个本地被 .gitignore 忽略的远程文件，保持不动")
+
+    # 2.5 删除护栏
+    # 这个脚本以「本地工作副本」为唯一真相。别人刚在你基线之上推了新文件、而你没同步，
+    # 那些文件在本地就不存在 → 会被判定成「你删了它」，于是一次推送就把别人的提交抹掉。
+    # 默认拒绝带删除的推送，确认要删再加 --allow-delete。
+    if deleted and not args.allow_delete:
+        die("这次推送会删除远程文件，已中止：\n"
+            + "\n".join(f"  - {p}" for p in deleted)
+            + "\n\n若确实是你要删的，加 --allow-delete 重跑；"
+              "\n若是别人刚推的新文件（你只是没同步），先把它拷进工作副本再推。")
 
     # 3. 安装包
     asset = args.asset
