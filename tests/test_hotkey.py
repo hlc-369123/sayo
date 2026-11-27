@@ -1,7 +1,10 @@
 """全局快捷键：Carbon 免授权热键、左右修饰键归一化、事件 tap 探测、命中状态机。"""
 from __future__ import annotations
 
+import sys
 import time
+
+import pytest
 
 from app.platform.hotkey import (
     CarbonHotkeys, HotkeyManager, carbon_combo, event_tap_available,
@@ -224,6 +227,8 @@ def test_single_key_detection_and_validation():
     assert valid_hotkey("cmd+shift+space+extra+more") is False
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="Carbon 后端仅存在于 macOS；Windows 走系统级键盘监听")
 def test_mixed_backend_preserves_global_index(monkeypatch):
     """组合键走 Carbon、单键走单键后端时，命中派发仍按全局下标对位。"""
     h = HotkeyManager()
@@ -272,3 +277,34 @@ def test_mixed_backend_preserves_global_index(monkeypatch):
     clock["t"] += 1.0
     carbon_captured["dispatch"](1, True)
     assert fired == ["dictate", "ask"]
+
+
+# --------------------------------------------------------------- Windows 录入器状态机
+def test_win_capture_single_modifier_records_single_key():
+    """只按一个修饰键再松开 → 录成单键热键。"""
+    from app.platform.keycapture import WinKeyCapture
+    cap = WinKeyCapture()
+    assert cap._handle_press("alt", "alt_l") == ""
+    assert cap._handle_release("alt", "alt_l") == "alt"
+
+
+def test_win_capture_left_and_right_modifier_are_distinct():
+    """左右 Alt 同时按住后只松开一个，不能被误判成「只按了一下 Alt」。"""
+    from app.platform.keycapture import WinKeyCapture
+    cap = WinKeyCapture()
+    assert cap._handle_press("alt", "alt_l") == ""
+    assert cap._handle_press("alt", "alt_r") == ""
+    assert cap._handle_release("alt", "alt_l") == ""
+    assert cap._handle_release("alt", "alt_r") == "alt"
+
+
+def test_win_capture_combo_and_fired_lock():
+    """修饰键 + 普通键 → 组合键；录入后同一次按住不再重复触发，reset 后可重录。"""
+    from app.platform.keycapture import WinKeyCapture
+    cap = WinKeyCapture()
+    assert cap._handle_press("ctrl", "ctrl_l") == ""
+    assert cap._handle_press("space", "char: ") == "ctrl+space"
+    assert cap._handle_press("d", "char:d") == ""      # 已录入，本次按住内忽略
+    cap.reset()
+    assert cap._handle_press("alt", "alt_l") == ""
+    assert cap._handle_release("alt", "alt_l") == "alt"

@@ -64,10 +64,53 @@ def _mac_hid_access() -> int | None:
 
 
 def accessibility_granted() -> bool | None:
-    """供输出链路查询：辅助功能未授权时，文字只能放进剪贴板。"""
-    if sys.platform != "darwin":
-        return None  # 非 macOS 无此概念
-    return _mac_accessibility()
+    """供输出链路查询：辅助功能未授权时，文字只能放进剪贴板。
+
+    Windows 无「辅助功能」这一 TCC 概念（键盘钩子 + SendInput 是普通
+    用户态能力），返回 True 表示「本平台不需要该权限、始终可用」，
+    这样输出链路不会因为拿到 None 而误判为未授权、把文字降级到剪贴板。
+    """
+    if sys.platform == "darwin":
+        return _mac_accessibility()
+    if sys.platform == "win32":
+        return True
+    return None  # 其他平台无此概念
+
+
+def _win_microphone() -> bool | None:
+    """读取 Windows 麦克风隐私授权（HKCU ConsentStore，纯本机只读）。
+
+    判定两级开关：全局「麦克风访问权限」+「允许桌面应用访问麦克风」。
+    桌面应用（未打包的 exe）的状态在 ConsentStore\\microphone\\NonPackaged 下，
+    Value=Allow 表示允许；Deny 表示用户显式拒绝。
+    返回 True/False 为明确状态，None 为无法查询（老系统 / 无该键 / 无权限读）。
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+        base = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone"
+
+        def value_of(path: str) -> str | None:
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as k:
+                    return str(winreg.QueryValueEx(k, "Value")[0])
+            except OSError:
+                return None
+
+        # 用户显式拒绝桌面应用访问麦克风 -> False（优先级最高）
+        nonpackaged = value_of(base + r"\NonPackaged")
+        if nonpackaged == "Deny":
+            return False
+        # 全局开关关闭 -> False
+        if value_of(base) == "Deny":
+            return False
+        # 有任一 Allow 即视为允许；都查不到则无法判断
+        if nonpackaged == "Allow" or value_of(base) == "Allow":
+            return True
+        return None
+    except Exception:
+        return None
 
 
 def check() -> list[PermissionState]:
@@ -84,11 +127,12 @@ def check() -> list[PermissionState]:
                             "系统级 Carbon 热键不需要此项；只有回退到键盘监听时才需要勾选"),
         ]
     if sys.platform == "win32":
+        # Windows 真正需要的只有麦克风一项。不再展示「辅助功能 / 输入监控」——
+        # 这两项在 Windows 上既无法授权也无需授权，展示出来只会误导用户。
         return [
-            PermissionState("microphone", "麦克风", None,
-                            "设置 → 隐私和安全性 → 麦克风，允许桌面应用访问"),
-            PermissionState("accessibility", "辅助功能", None,
-                            "无需额外授权；若被安全软件拦截，请允许本应用模拟按键"),
+            PermissionState("microphone", "麦克风", _win_microphone(),
+                            "打开 Windows 设置 → 隐私和安全性 → 麦克风，"
+                            "确认「麦克风访问」和「允许桌面应用访问麦克风」均已开启"),
         ]
     return [
         PermissionState("microphone", "麦克风", None, "确保当前用户在 audio 组，且 PulseAudio/PipeWire 正常运行"),
@@ -96,20 +140,58 @@ def check() -> list[PermissionState]:
     ]
 
 
-def open_settings(which: str) -> None:
-    """调起本机系统设置面板（不联网）。"""
+def open_settings_result(which: str) -> tuple[bool, str]:
+    """调起本机系统设置面板，返回 (是否成功, 给用户看的说明)。不联网。"""
+    if sys.platform == "win32":
+        panels = {
+            "microphone": "ms-settings:privacy-microphone",
+            "accessibility": "ms-settings:easeofaccess",
+            "input_monitoring": "ms-settings:privacy-microphone",
+        }
+        uri = panels.get(which, "ms-settings:privacy")
+        errors: list[str] = []
+        # os.startfile 是 Windows 上最可靠的方式；失败再退回 shell 启动。
+        try:
+            import os
+            os.startfile(uri)  # type: ignore[attr-defined]
+            return True, "已打开 Windows 设置 → 隐私和安全性 → 麦克风，请开启两个开关。"
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+        try:
+            subprocess.Popen(
+                ["cmd", "/c", "start", "", uri], shell=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            return True, "已打开 Windows 设置 → 隐私和安全性 → 麦克风，请开启两个开关。"
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+        return False, (
+            "系统设置面板未能自动打开。请手动打开：\n"
+            "开始菜单 → 设置 → 隐私和安全性 → 麦克风，\n"
+            "开启「麦克风访问权限」和「允许桌面应用访问麦克风」两个开关。\n"
+            "详细信息：" + "；".join(errors))
+
     if sys.platform == "darwin":
         panel = {
             "microphone": "Privacy_Microphone",
             "accessibility": "Privacy_Accessibility",
             "input_monitoring": "Privacy_ListenEvent",
         }.get(which, "Privacy")
-        subprocess.Popen(
-            ["open", f"x-apple.systempreferences:com.apple.preference.security?{panel}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-    elif sys.platform == "win32":
-        subprocess.Popen(["start", "ms-settings:privacy-microphone"], shell=True)
+        try:
+            subprocess.Popen(
+                ["open", f"x-apple.systempreferences:com.apple.preference.security?{panel}"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            return True, "已打开系统设置。"
+        except Exception as exc:
+            return False, f"设置面板未能打开：{exc}"
+    return False, "当前系统暂不支持自动打开设置面板，请手动检查相关权限。"
+
+
+def open_settings(which: str) -> None:
+    """兼容旧调用：调起设置面板，静默忽略返回值。"""
+    open_settings_result(which)
 
 
 # ------------------------------------------------------------------ 主动弹窗
@@ -175,6 +257,21 @@ def request_all(force: bool = False, include_input_monitoring: bool = True) -> d
     输入监控，跳过它就不会弹出会抢走输入框光标的系统授权框。
     """
     out: dict[str, str] = {}
+    if sys.platform == "win32":
+        # Windows 无法由应用主动触发系统授权弹窗：麦克风开关由用户在隐私设置里
+        # 控制。这里只读状态并给出精确指引；Windows 11 首次录音时系统也可能自行
+        # 弹一次窗，但不可依赖，所以明确告诉用户去哪开。
+        mic = _win_microphone()
+        if mic is True and not force:
+            out["microphone"] = "麦克风访问已允许"
+        else:
+            open_settings("microphone")
+            out["microphone"] = (
+                "已打开 Windows 麦克风隐私设置，请确认「麦克风访问」和"
+                "「允许桌面应用访问麦克风」两个开关均已开启"
+            )
+        out["accessibility"] = "Windows 无需此权限（全局热键与文字注入为系统默认能力）"
+        return out
     if sys.platform != "darwin":
         out["microphone"] = "桌面系统会在首次录音时由系统自行弹窗"
         return out

@@ -18,6 +18,11 @@ import pytest
 
 from app.platform import keycapture as kc
 
+# 这组用例注入 fake Quartz 直接驱动 macOS 的 CGEventTap 回调状态机；
+# Windows 侧的单键录入由 WinKeyCapture（pynput 低级钩子）实现，见 test_hotkey.py。
+pytestmark = pytest.mark.skipif(
+    sys.platform != "darwin", reason="CGEventTap 状态机仅存在于 macOS")
+
 
 _KDOWN, _KUP, _FLAGS = 10, 11, 12
 _KEYCODE_FIELD = 100

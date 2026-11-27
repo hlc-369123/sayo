@@ -5,7 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 VENV="${VENV:-$ROOT/.venv}"
-VERSION="1.0.0"
+# 版本号唯一来源：app/config.py 的 APP_VERSION（取不到时兜底 1.0.0）
+VERSION="$(sed -n 's/^APP_VERSION = "\(.*\)"$/\1/p' app/config.py | head -1)"
+VERSION="${VERSION:-1.0.0}"
 
 echo "=== 1/5 依赖（仅构建机） ==="
 if [[ ! -x "$VENV/bin/python" ]]; then python3 -m venv "$VENV"; fi

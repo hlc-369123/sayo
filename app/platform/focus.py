@@ -15,6 +15,8 @@ from __future__ import annotations
 import sys
 import time
 
+from .platform_text import paste_text
+
 TEXT_ROLES = {
     "AXTextField", "AXTextArea", "AXSecureTextField", "AXSearchField",
     "AXComboBox", "AXDateField", "AXTextInput", "AXSearchBox",
@@ -133,10 +135,10 @@ def choose_output(focused: bool | None, *, smart: bool = True,
     if not smart or focused is True:
         return "paste", "已写入输入框"
     if focused is False:
-        return "clipboard", "光标不在输入框 · 已复制到剪贴板（⌘V 粘贴）"
+        return "clipboard", f"光标不在输入框 · 已复制到剪贴板（{paste_text()} 粘贴）"
     if unknown == "paste":
         return "paste", "已写入输入框"
-    return "clipboard", "焦点不明确 · 已复制到剪贴板（⌘V 粘贴）"
+    return "clipboard", f"焦点不明确 · 已复制到剪贴板（{paste_text()} 粘贴）"
 
 
 def describe() -> str:

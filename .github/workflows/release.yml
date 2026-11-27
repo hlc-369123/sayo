@@ -1,0 +1,132 @@
+name: Release
+
+# 同一份源码，两个平台各自构建，产物挂到同一个 Release 下。
+# 使用者按需只下载自己平台的那一个文件。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "发布到哪个标签，例如 v1.0.1"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  # CI 机器上没有语音模型，跳过模型完整性校验；测试由 ci.yml 单独把关
+  SAYO_SKIP_MODEL_CHECK: "1"
+  SAYO_SKIP_TESTS: "1"
+
+jobs:
+  # 发布前的测试门禁：打 tag 时先跑测试，红了就绝不产出/上传安装包。
+  # 注意这里刻意用 macos-15-intel —— 与 ci.yml 同一镜像，避免 Linux 上
+  # 因缺少音频设备/系统框架而出现「环境性失败」。
+  tests:
+    name: 发布前测试门禁
+    runs-on: macos-15-intel
+    env:
+      SAYO_SKIP_TESTS: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install -q --upgrade pip
+          python -m pip install -q -r requirements-build.txt -r requirements-macos.txt
+      - name: Unit tests
+        env:
+          SAYO_DATA: ${{ runner.temp }}/sayo-test
+        run: >-
+          python -m pytest -q tests
+          --deselect=tests/test_audio_gate.py::test_asr_still_transcribes_real_speech
+          --deselect=tests/test_live.py::test_following_speech_revises_earlier_text
+          --basetemp=${{ runner.temp }}/pytest
+      - name: Offline source audit
+        run: |
+          python -c "import sys; from app.core.offline import audit_source; hits = audit_source('app'); print('联网关键字命中:', len(hits)); [print(h) for h in hits]; sys.exit(1 if hits else 0)"
+
+  macos:
+    name: macOS 安装包（DMG / PKG）
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: 构建
+        run: bash scripts/build_macos.sh
+      - name: 生成 sha256
+        run: |
+          cd dist
+          for f in sayo-*-macos.dmg sayo-*-macos.pkg; do
+            [ -f "$f" ] && shasum -a 256 "$f" > "$f.sha256"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-packages
+          path: |
+            dist/sayo-*-macos.dmg
+            dist/sayo-*-macos.pkg
+            dist/sayo-*-macos.*.sha256
+          if-no-files-found: error
+
+  windows:
+    name: Windows 安装包（Setup.exe / ZIP）
+    runs-on: windows-latest
+    env:
+      # 用 setup-python 装好的解释器，省掉重复建 venv 的时间
+      SAYO_PYTHON: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: 安装 Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: 构建
+        shell: pwsh
+        run: ./scripts/build_windows.ps1
+      - name: 生成 sha256
+        shell: pwsh
+        run: |
+          # 只看 dist 第一层：dist\sayo\ 是解包目录，里面的 sayo.exe 不需要校验文件
+          $files = Get-ChildItem -Path dist -File | Where-Object { $_.Name -match '^sayo-\d.*\.(exe|zip)$' }
+          if (-not $files) { throw "dist 里没有安装包，构建可能失败" }
+          foreach ($f in $files) {
+            $h = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
+            "$h  $($f.Name)" | Out-File -FilePath "$($f.FullName).sha256" -Encoding ascii -NoNewline
+            Write-Host "sha256 $($f.Name)"
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: |
+            dist/sayo-*-windows-setup.exe
+            dist/sayo-*-windows-x64.zip
+            dist/sayo-*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: 挂到 Release
+    needs: [tests, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-files
+          merge-multiple: true
+      - name: 列出待发布文件
+        run: ls -lh release-files
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          files: release-files/**
+          fail_on_unmatched_files: false
+          generate_release_notes: true

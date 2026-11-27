@@ -10,6 +10,10 @@ from PySide6.QtWidgets import (
 
 from ..config import APP_NAME
 from ..platform import permissions
+from ..platform.platform_text import (
+    IS_WIN, combo_text, default_hotkey_hint, need_accessibility_prompt,
+    paste_text, permission_state_text,
+)
 
 
 class QuickStartWindow(QWidget):
@@ -44,14 +48,14 @@ class QuickStartWindow(QWidget):
         cv.setContentsMargins(2, 2, 2, 2)
         cv.setSpacing(10)
 
-        # 第一步：权限
-        box1 = QGroupBox("1 · 本机授权（麦克风 / 辅助功能）")
+        # 第一步：权限（Windows 只需麦克风；macOS 还需辅助功能）
+        box1 = QGroupBox("1 · 本机授权（麦克风）" if IS_WIN else "1 · 本机授权（麦克风 / 辅助功能）")
         v1 = QVBoxLayout(box1)
         self.lb_perm = QLabel()
         self.lb_perm.setWordWrap(True)
         v1.addWidget(self.lb_perm)
         row = QVBoxLayout()
-        btn_perm = QPushButton("一键重新申请权限")
+        btn_perm = QPushButton("打开麦克风设置" if IS_WIN else "一键重新申请权限")
         btn_perm.clicked.connect(self._request_permissions)
         row.addWidget(btn_perm)
         v1.addLayout(row)
@@ -60,15 +64,31 @@ class QuickStartWindow(QWidget):
         # 第二步：操作
         box2 = QGroupBox("2 · 听写")
         v2 = QVBoxLayout(box2)
-        step2 = QLabel(
-            "把光标点进任意输入框 → 同时按住 ⌘ + Shift + 空格 三个键（Space 就是键盘"
-            "最下方那个空格键）→ 说话 → 再按一次结束。\n"
-            "⌘ + Shift + E = 语音编辑选中文字。\n"
-            "也可以在「设置 → 常规」改成其他组合键或单个按键（如 option/fn）。\n"
-            "组合键（如 ⌘+Shift+空格）是系统级注册，免授权、覆盖安装后也不会失效；"
-            "应用不会抢走输入框光标，点回输入框不会中断听写。"
-            "也可以点菜单栏「开始 / 结束听写」手动操作。按了没反应可用菜单栏"
-            "「快捷键没反应？诊断 / 修复…」查看是否被其他应用占用了组合键。")
+        if IS_WIN:
+            key_d = combo_text(self.settings.get("hotkey_dictate", default_hotkey_hint()))
+            key_a = combo_text(self.settings.get("hotkey_ask", ""))
+            step2_text = (
+                f"把光标点进任意输入框 → 按下 {key_d} → 说话 → 再按一次结束。\n"
+                + (f"{key_a} = 语音编辑选中文字。\n" if key_a else "")
+                + "也可以在「设置 → 常规」改成其他组合键，或在托盘菜单手动开始 / 结束听写。\n"
+                  "组合键是系统级注册，免授权、覆盖安装后也不会失效；"
+                  "应用不会抢走输入框光标，点回输入框不会中断听写。"
+                  "按了没反应可用托盘菜单「快捷键没反应？诊断 / 修复…」"
+                  "查看是否被其他应用占用了组合键。"
+            )
+        else:
+            # macOS 文案保持原文一字不改（含「菜单栏」「单个按键（如 option/fn）」）
+            step2_text = (
+                "把光标点进任意输入框 → 同时按住 ⌘ + Shift + 空格 三个键（Space 就是键盘"
+                "最下方那个空格键）→ 说话 → 再按一次结束。\n"
+                "⌘ + Shift + E = 语音编辑选中文字。\n"
+                "也可以在「设置 → 常规」改成其他组合键或单个按键（如 option/fn）。\n"
+                "组合键（如 ⌘+Shift+空格）是系统级注册，免授权、覆盖安装后也不会失效；"
+                "应用不会抢走输入框光标，点回输入框不会中断听写。"
+                "也可以点菜单栏「开始 / 结束听写」手动操作。按了没反应可用菜单栏"
+                "「快捷键没反应？诊断 / 修复…」查看是否被其他应用占用了组合键。"
+            )
+        step2 = QLabel(step2_text)
         step2.setWordWrap(True)
         v2.addWidget(step2)
         cv.addWidget(box2)
@@ -76,14 +96,26 @@ class QuickStartWindow(QWidget):
         # 第三步：结果去向与浮层
         box3 = QGroupBox("3 · 结果去哪了 / 屏幕上看到什么")
         v3 = QVBoxLayout(box3)
+        paste = paste_text()
+        clip_line = (
+            "· 光标不在输入框里：只放进剪贴板，不模拟按键（按 " + paste + " 自己粘）。\n"
+        )
+        if IS_WIN:
+            focus_line = (
+                "· 微信等应用可能识别不到输入框，此时默认只放剪贴板；"
+                "可在设置 → 常规 →「焦点无法判断时」改成自动粘贴。\n"
+            )
+        else:
+            focus_line = (
+                "· 微信等应用不暴露焦点控件时，默认也只放剪贴板；可在设置 → 常规 → "
+                "「焦点无法判断时」改成自动粘贴。若辅助功能未授权，一律只写剪贴板。\n"
+            )
         step3 = QLabel(
             "· 光标在输入框里：识别完直接写进该输入框。\n"
-            "· 光标不在输入框里：只放进剪贴板，不模拟按键（按 ⌘V 自己粘）。\n"
-            "· 微信等应用不暴露焦点控件时，默认也只放剪贴板；可在设置 → 常规 → "
-            "「焦点无法判断时」改成自动粘贴。若辅助功能未授权，一律只写剪贴板。\n"
-            "· 录音时屏幕顶部中央有一个小巧的胶囊浮层：左 × 取消、中间实时文字、"
-            "右 ✓ 确认；下面有一条随音量变化的波形。切换应用、切换桌面、进入全屏都不会消失，"
-            "也不会挡住鼠标点击。")
+            + clip_line + focus_line
+            + "· 录音时屏幕顶部中央有一个小巧的胶囊浮层：左 × 取消、中间实时文字、"
+              "右 ✓ 确认；下面有一条随音量变化的波形。切换应用、切换桌面、进入全屏都不会消失，"
+              "也不会挡住鼠标点击。")
         step3.setWordWrap(True)
         v3.addWidget(step3)
         cv.addWidget(box3)
@@ -109,23 +141,37 @@ class QuickStartWindow(QWidget):
         self._refresh()
 
     def _refresh(self, _result=None):
-        lines = []
-        for st in permissions.check():
-            state = "已授权" if st.granted is True else ("未授权" if st.granted is False else "需人工确认")
-            lines.append(f"{st.label}：{state}")
-        self.lb_perm.setText(" · ".join(lines) +
-                             "\n全局快捷键无需输入监控授权；辅助功能仅用于「自动输入到输入框」，"
-                             "未授权时文字仍会进入剪贴板。若识别结果没自动进输入框，"
-                             "点菜单栏「授权引导 · 文字自动输入」按三步勾选即可。")
+        lines = [permission_state_text(st.label, st.granted)
+                 for st in permissions.check()]
+        if IS_WIN:
+            tail = (
+                "\nWindows 只需这一项授权；全局快捷键和文字写入输入框都是系统默认能力，"
+                "无需额外授权。若录音没声音，请确认上面的麦克风开关，"
+                "并检查系统输入音量、麦克风是否被其他应用独占。"
+            )
+        else:
+            tail = (
+                "\n全局快捷键无需输入监控授权；辅助功能仅用于「自动输入到输入框」，"
+                "未授权时文字仍会进入剪贴板。若识别结果没自动进输入框，"
+                "点菜单栏「授权引导 · 文字自动输入」按三步勾选即可。"
+            )
+        self.lb_perm.setText(" · ".join(lines) + tail)
 
     def _request_permissions(self):
-        self.lb_perm.setText("正在向系统发起授权弹窗，请留意屏幕上的对话框…")
-        permissions.request_all_async(
-            force=True, callback=lambda r: self.perms_refreshed.emit(r)
-        )
+        if IS_WIN:
+            # Windows 无法由应用主动弹授权框，直接打开系统设置页
+            self.lb_perm.setText("正在打开 Windows 麦克风设置…")
+            ok, note = permissions.open_settings_result("microphone")
+            self.lb_perm.setText(note)
+            self.perms_refreshed.emit({"microphone": "opened" if ok else "failed"})
+        else:
+            self.lb_perm.setText("正在向系统发起授权弹窗，请留意屏幕上的对话框…")
+            permissions.request_all_async(
+                force=True, callback=lambda r: self.perms_refreshed.emit(r)
+            )
 
     def _test(self):
-        self.lb_test.setText("正在本机离线识别…")
+        self.lb_test.setText("正在本机离线识别…首次加载模型约需 10–30 秒，界面可以继续操作。")
         def work():
             try:
                 text = self.probe() if self.probe else "（本窗口未提供测试接口）"
