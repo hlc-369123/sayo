@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -148,17 +149,27 @@ def _acquire_gui_instance_lock() -> bool:
     return True
 
 
+def live_engine_config(settings_data: dict) -> dict:
+    """实时预览引擎的配置：在主引擎设置上覆盖预览专用的固定项。
+
+    设置保存后必须用本函数重新生成 live.asr.settings——旧实现只更新了
+    主引擎，导致浮层预览一直用旧的语言/灵敏度/VAD，出现「预览空白但终稿
+    有字」或相反。抽成单一函数，构造与保存共用，杜绝两处口径漂移。
+    """
+    cfg = dict(settings_data)
+    cfg.update({"precision": "int8", "accelerator": "cpu",
+                "sensitivity": settings_data.get("sensitivity", "high"),
+                "gpu_recheck": False, "vad_enabled": True, "num_threads": 2})
+    return cfg
+
+
 def build_live_engine(settings: Settings) -> ASREngine:
     """实时预览用 int8 轻量引擎，与主 fp32 引擎隔离，避免并发改模型。
 
     灵敏度必须与主引擎一致：旧实现写死 standard，轻声说话时能量门控会把
     整句判成静音，预览窗口就一直空白（用户看到「不显示识别的文字」）。
     """
-    cfg = dict(settings.data)
-    cfg.update({"precision": "int8", "accelerator": "cpu",
-                "sensitivity": settings.get("sensitivity", "high"),
-                "gpu_recheck": False, "vad_enabled": True, "num_threads": 2})
-    return ASREngine(models_dir(), cfg)
+    return ASREngine(models_dir(), live_engine_config(settings.data))
 
 
 # --------------------------------------------------------------------- CLI
@@ -767,7 +778,11 @@ class Controller:
     def shutdown(self):
         self.live.stop()
         self.hotkeys.stop()
-        self.executor.shutdown(wait=False, cancel_futures=True)
+        # 必须等已在运行的识别任务结束再关数据库：cancel_futures 只取消
+        # 排队任务，运行中的 _work 随后写历史会撞上已关闭的连接，导致
+        # 本次识别结果丢失且无提示。max_workers=1 + 本地推理有限时，
+        # wait=True 最坏多等几秒，换来不丢数据。
+        self.executor.shutdown(wait=True, cancel_futures=True)
         self.storage.close()
 
 
@@ -969,6 +984,8 @@ def run_gui(settings: Settings) -> int:
     def on_settings_saved(_data):
         ctrl.pipeline.refresh()
         ctrl.asr.settings = settings.data
+        # 实时预览引擎用的是独立 cfg 副本，必须同步，否则预览与终稿口径不一致
+        ctrl.live.asr.settings = live_engine_config(settings.data)
         ctrl.live.interval = max(0.05, min(0.5,
             float(settings.get("live_interval_ms", 550)) / 1000.0))
         apply_app_theme()
@@ -1055,22 +1072,27 @@ def run_gui(settings: Settings) -> int:
             app.quit()
 
     _prev_state = ["idle"]
+    # 延时静音会话：开始提示音实测 0.44s，静音须等它播完（否则把本应用提示音
+    # 一起掐掉）；若用户在延时结束前就停录音，token 失效，避免系统永久静音。
+    from .core.mute import MuteSession as _MuteSession
+    _mute_session = _MuteSession(mute_system_output)
+    _START_CUE_MS = 500  # > 0.44s 提示音时长，留一点余量
 
     def on_state(state, text):
         overlay.set_state(state, text)
         entering = state == "recording" and _prev_state[0] != "recording"
         leaving = _prev_state[0] == "recording" and state != "recording"
         # 语音输入时静音其他活动音频（可在设置关闭）：进入录音静音，结束/取消恢复。
-        # 必须等「开始提示音」播完后再静音系统输出，否则设备级静音会把本应用自己的
-        # 开始音一起掐掉（用户只听到结束音、误以为开始音跑到结束去了）。
         # 蓝牙耳机输入/输出同一设备时跳过静音，否则会把输入流一起掐断（实测变全零）。
-        if bool(settings.get("mute_others_during_input", False)):
-            if entering and not Recorder.shares_output_device():
-                QTimer.singleShot(320, lambda: mute_system_output(True))
-            elif leaving:
-                mute_system_output(False)
+        if entering:
+            if (bool(settings.get("mute_others_during_input", False))
+                    and not Recorder.shares_output_device()):
+                token = _mute_session.begin()
+                QTimer.singleShot(_START_CUE_MS, lambda t=token: _mute_session.apply(t))
+        elif leaving:
+            # 先恢复输出，结束音才能听到；end() 同时让未触发的延时静音失效。
+            _mute_session.end()
         # 交互声音：进入 recording 播放开始音，离开 recording 播放结束音。
-        # 结束音要先解除静音再播（上面 leaving 分支已先 unmute），保证能听到。
         if entering:
             play_start()
         elif leaving:
@@ -1085,23 +1107,30 @@ def run_gui(settings: Settings) -> int:
         ctrl._restore_front()
 
         def _paste_and_measure():
+            # 整个粘贴流程放到工作线程：insert_text 内部有 350ms 的
+            # 「等目标应用完成粘贴再恢复剪贴板」sleep，放在 GUI 线程会让
+            # 界面冻结 350ms。ctrl.on_result 里的 UI 更新都走 Qt Signal
+            # （QueuedConnection），工作线程发是安全的。
             t_paste = time.perf_counter()
-            try:
-                ctrl.on_result(result)
-            finally:
-                # T1/T2/T3 分口径埋点（评审 §7）：三种耗时分开记，避免把
-                # 「模型处理」与「等待目标应用焦点 / 粘贴」混成一个数字。
-                # 注：这里测到的是「粘贴指令返回」，并非目标应用真正渲染出文字，
-                # 后者无跨应用可靠回执，需人工实测补充。
-                t_done = time.perf_counter()
-                log_note(
-                    f"T1_asr={result.duration_ms}ms "
-                    f"T2_emit_to_paste={(t_paste - t_emit) * 1000:.0f}ms "
-                    f"T3_paste_call={(t_done - t_paste) * 1000:.0f}ms "
-                    f"total_from_emit={(t_done - t_emit) * 1000:.0f}ms "
-                    f"chars={len(result.text)} "
-                    f"llm_in_path={'本机大模型整理' in result.applied}",
-                    "latency.log")
+
+            def _work():
+                try:
+                    ctrl.on_result(result)
+                finally:
+                    # T1/T2/T3 分口径埋点（评审 §7）：三种耗时分开记。
+                    # 注：这里测到的是「粘贴指令返回」，并非目标应用真正
+                    # 渲染出文字，后者无跨应用可靠回执。
+                    t_done = time.perf_counter()
+                    log_note(
+                        f"T1_asr={getattr(result, 'asr_ms', result.duration_ms)}ms "
+                        f"T2_emit_to_paste={(t_paste - t_emit) * 1000:.0f}ms "
+                        f"T3_paste_call={(t_done - t_paste) * 1000:.0f}ms "
+                        f"total_from_emit={(t_done - t_emit) * 1000:.0f}ms "
+                        f"chars={len(result.text)} "
+                        f"llm_in_path={'本机大模型整理' in result.applied}",
+                        "latency.log")
+
+            threading.Thread(target=_work, daemon=True, name="sayo-paste").start()
 
         QTimer.singleShot(140, _paste_and_measure)
 

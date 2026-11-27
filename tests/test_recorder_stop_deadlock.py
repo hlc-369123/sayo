@@ -141,3 +141,44 @@ def test_no_user_facing_restart_error_path():
     """根治版不应再有旧版开流前的「请重启」兜底。"""
     rec = _recording_recorder()
     assert not hasattr(rec, "_check_stalled_close")
+
+
+def test_session_callback_uses_captured_stop_event_not_instance():
+    """新录音开始后，旧流的迟到回调必须看自己那轮的 stop_event。
+
+    回归：callback 若动态读 self._stop_event，则 stop→start 后旧流回调
+    看到的是新一轮未 set 的 Event，不会 abort，反而把旧流音频写进新一轮
+    chunks（新旧混音），且旧的 inactive 永不置位（后台线程空等 2 秒）。
+    """
+    rec = Recorder({})
+    old_stop, old_inactive = rec._start_event_pair_for_test()
+    old_stop.set()                       # 上一轮已请求停止
+    new_stop, new_inactive = rec._start_event_pair_for_test()
+    assert not new_stop.is_set()         # 新一轮的 Event 是干净的
+
+    def callback_for_session(indata, frames, time_info, status):
+        return rec._callback(indata, frames, time_info, status, stop_event=old_stop)
+
+    if recorder_mod._CALLBACK_ABORT is None:
+        pytest.skip("本环境无 sounddevice，无法验证 CallbackAbort")
+    with pytest.raises(recorder_mod._CALLBACK_ABORT):
+        callback_for_session(np.zeros((10, 1), dtype=np.float32), 10, None, None)
+    assert len(rec._chunks) == 0, "旧流回调不得写入新一轮的音频缓冲"
+
+    # 本轮的 callback 用本轮 Event：未停止时正常收音频
+    rec._recording = True
+    callback_for_session = lambda indata, frames, t, s: rec._callback(
+        indata, frames, t, s, stop_event=new_stop)
+    callback_for_session(np.zeros((10, 1), dtype=np.float32), 10, None, None)
+    assert len(rec._chunks) == 1
+
+
+def test_session_finished_sets_captured_inactive_event():
+    """finished 回调必须置本轮的 inactive Event，不能置新一轮的。"""
+    rec = Recorder({})
+    old_stop, old_inactive = rec._start_event_pair_for_test()
+    new_stop, new_inactive = rec._start_event_pair_for_test()
+
+    rec._on_stream_finished(inactive_event=old_inactive)
+    assert old_inactive.is_set()
+    assert not new_inactive.is_set(), "旧流 finished 不得置新一轮的 inactive"

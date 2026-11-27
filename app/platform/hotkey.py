@@ -16,10 +16,15 @@ macOS 主后端：Carbon ``RegisterEventHotKey`` + ``InstallEventHandler``。
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
 import threading
 import time
 from dataclasses import dataclass
+
+# 单键热键的逐事件诊断日志默认关闭（全局键盘路径上逐键写盘会 IO 抖动、
+# 日志无限增长）。排查问题时设 SAYO_TAP_DEBUG=1 再开启。
+_TAP_DEBUG = os.environ.get("SAYO_TAP_DEBUG", "0") == "1"
 
 # 左/右修饰键在 macOS 上是不同的虚拟键码（如左 Option=58、右 Option=61）。
 # 组合键场景：Carbon RegisterEventHotKey 的 modifier mask 不区分左右（只有一个
@@ -374,6 +379,8 @@ class SingleKeyHotkeys:
     def __init__(self):
         self._tap = None
         self._source = None
+        self._pump_source = None        # pump 线程里创建的 runloop source
+        self._pump_runloop = None       # pump 线程自己的 runloop
         self._dispatch = None
         self._bindings: list = []       # [(index, combo)] 只含单键 binding
         self._mod_pressed: dict[str, bool] = {}
@@ -413,20 +420,24 @@ class SingleKeyHotkeys:
                 keycode = Quartz.CGEventGetIntegerValueField(
                     event, Quartz.kCGKeyboardEventKeycode)
                 flags = int(Quartz.CGEventGetFlags(event))
-                # 诊断：记录每个到达 tap 的事件，定位「按了没反应」
-                try:
-                    import time as _time
-                    import pathlib as _pl
-                    _log = _pl.Path.home() / "Library" / "Application Support" / "sayo" / "logs"
-                    _log.mkdir(parents=True, exist_ok=True)
-                    _et = {Quartz.kCGEventFlagsChanged: "flagsChanged",
-                            Quartz.kCGEventKeyDown: "keyDown",
-                            Quartz.kCGEventKeyUp: "keyUp"}.get(etype, str(etype))
-                    with (_log / "singletap.log").open("a") as _f:
-                        _f.write(f"{_time.strftime('%H:%M:%S')} {proxy and 'proxy' or 'direct'} "
-                                 f"{_et} keycode={keycode} flags=0x{flags:x}\n")
-                except Exception:
-                    pass
+                # 诊断日志默认关闭：这段回调运行在全局键盘监听路径上，
+                # 原来对每个 keyDown/keyUp/flagsChanged 都 mkdir+open+write，
+                # 打字时造成 IO 抖动、singletap.log 无限增长（且只记键码仍有
+                # 隐私顾虑）。仅当设置 SAYO_TAP_DEBUG=1 时才逐事件记录。
+                if _TAP_DEBUG:
+                    try:
+                        import time as _time
+                        import pathlib as _pl
+                        _log = _pl.Path.home() / "Library" / "Application Support" / "sayo" / "logs"
+                        _log.mkdir(parents=True, exist_ok=True)
+                        _et = {Quartz.kCGEventFlagsChanged: "flagsChanged",
+                                Quartz.kCGEventKeyDown: "keyDown",
+                                Quartz.kCGEventKeyUp: "keyUp"}.get(etype, str(etype))
+                        with (_log / "singletap.log").open("a") as _f:
+                            _f.write(f"{_time.strftime('%H:%M:%S')} "
+                                     f"{_et} keycode={keycode} flags=0x{flags:x}\n")
+                    except Exception:
+                        pass
                 if etype == Quartz.kCGEventFlagsChanged:
                     for index, combo in self._bindings:
                         if not is_single_modifier(combo):
@@ -563,6 +574,10 @@ class SingleKeyHotkeys:
                 cur = Quartz.CFRunLoopGetCurrent()
                 if src is not None and cur is not None:
                     Quartz.CFRunLoopAddSource(cur, src, _CF_RUNLOOP_COMMON)
+                    # 保存回实例：uninstall 必须用它从本线程 runloop 摘除，
+                    # 否则反复开关设置窗口会累积 tap/source（资源泄漏）。
+                    self._pump_source = src
+                    self._pump_runloop = cur
                     log("pump 线程: source 已挂到本线程 runloop")
             except Exception as exc:
                 log(f"pump 线程挂 source 失败: {exc}")
@@ -573,6 +588,16 @@ class SingleKeyHotkeys:
             except Exception:
                 time.sleep(0.05)
             time.sleep(0.01)
+        # 退出前从本线程 runloop 摘掉 source（runloop 属于本线程，这里摘最安全），
+        # 否则反复开关设置窗口会累积 runloop source。
+        if self._pump_source is not None and self._pump_runloop is not None:
+            try:
+                Quartz.CFRunLoopRemoveSource(
+                    self._pump_runloop, self._pump_source, _CF_RUNLOOP_COMMON)
+            except Exception:
+                pass
+            self._pump_source = None
+            self._pump_runloop = None
         log("pump 线程退出")
 
     def _guard_loop(self) -> None:
@@ -649,6 +674,8 @@ class SingleKeyHotkeys:
         tap, source, runloop = self._tap, self._source, getattr(self, "_runloop", None)
         self._tap = None
         self._source = None
+        self._pump_source = None
+        self._pump_runloop = None
         self._dispatch = None
         self._bindings = []
         self.count = 0
@@ -659,6 +686,9 @@ class SingleKeyHotkeys:
             Quartz.CGEventTapEnable(tap, False)
             if source is not None and runloop is not None:
                 Quartz.CFRunLoopRemoveSource(runloop, source, _CF_RUNLOOP_COMMON)
+            # 关键：必须 invalidate mach port，否则 tap 句柄永久泄漏。
+            # 旧实现只 disable、从不 invalidate，反复重建会累积系统事件 tap。
+            Quartz.CFMachPortInvalidate(tap)
         except Exception:
             pass
 
@@ -723,6 +753,7 @@ class HotkeyManager:
         self._error = ""
         self._last_hit: str = ""
         self._last_fire = 0.0
+        self._last_fire_by_combo: dict[str, float] = {}  # 去抖按 binding 区分
 
     @property
     def error(self) -> str:
@@ -766,10 +797,15 @@ class HotkeyManager:
             binding = self._bindings[index]
             now = time.monotonic()
             if pressed:
-                if binding.active or now - self._last_fire < 0.28:
+                # 去抖必须按 binding 区分：原来用全局 _last_fire，导致按完
+                # 听写键立刻按编辑键（或 push-to-talk 快速连按）时，第二个
+                # 不同热键被 280ms 窗口吞掉。
+                last = self._last_fire_by_combo.get(binding.combo, 0.0)
+                if binding.active or now - last < 0.28:
                     return
                 binding.active = True
                 self._last_fire = now
+                self._last_fire_by_combo[binding.combo] = now
                 self._last_hit = binding.combo
                 fn = binding.on_press
             else:

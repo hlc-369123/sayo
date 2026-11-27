@@ -128,3 +128,53 @@ def set_muted(mute: bool) -> None:
                 _SAVED.clear()
         except Exception as exc:
             _log(f"set_muted({mute}) 异常：{exc}")
+
+
+class MuteSession:
+    """一轮录音的延时静音会话，解决两个真实故障：
+
+    1. 开始提示音约 0.44s，静音必须等它播完，否则设备级静音会把本应用
+       自己的提示音一起掐掉（用户只听到结束音，误以为提示音反了）。
+    2. 若用户在延时内就结束录音（误触、极短录音），延时回调不能再静音，
+       否则系统输出永久保持静音——这正是旧的 `QTimer.singleShot(320, ...)`
+       无复查导致的「按一下快捷键后电脑一直没声音」。
+
+    用 generation token 而不是持有 QTimer 句柄：PySide 的 singleShot 不返回
+    可 stop 的句柄，因此让每个延时回调带上发起时的 token，会话结束/重开后
+    token 失效，回调自然变成空操作。线程安全。
+    """
+
+    def __init__(self, apply_fn=None):
+        self._apply = apply_fn or set_muted
+        self._lock = threading.Lock()
+        self._generation = 0
+        self._active = False
+
+    def begin(self) -> int:
+        """开启一轮录音，返回本轮 token，交给延时回调。"""
+        with self._lock:
+            self._generation += 1
+            self._active = True
+            return self._generation
+
+    def end(self) -> None:
+        """结束录音：立刻使未触发的延时失效并恢复输出（幂等）。"""
+        with self._lock:
+            self._generation += 1
+            self._active = False
+            apply_fn = self._apply
+        try:
+            apply_fn(False)
+        except Exception as exc:
+            _log(f"MuteSession.end 恢复失败：{exc}")
+
+    def apply(self, token: int) -> None:
+        """延时回调：只有 token 仍属于当前活跃会话才真正静音。"""
+        with self._lock:
+            if not self._active or token != self._generation:
+                return
+            apply_fn = self._apply
+        try:
+            apply_fn(True)
+        except Exception as exc:
+            _log(f"MuteSession.apply 静音失败：{exc}")

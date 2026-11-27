@@ -187,9 +187,12 @@ class KeyCapture:
                     return event
 
                 if keycode == _ESC_CODE or keycode in _CLEAR_CODES:
-                    # 退格/删除/Esc：清空并复位状态机，继续监听等待重录
+                    # 退格/删除/Esc：清空并复位状态机，继续监听等待重录。
+                    # _saw_plain 也必须复位：松开修饰键判定单键的条件是
+                    # `not self._saw_plain`，若清空时误置 True，则同一录入框内
+                    # 删掉后再按单个 Option 永远录不上（表现为必须切焦点重开）。
                     self._fired = False
-                    self._saw_plain = True
+                    self._saw_plain = False
                     self._mod_candidates = []
                     if cb:
                         cb("")
@@ -327,4 +330,5 @@ class KeyCapture:
         """
         with self._lock:
             self._fired = False
+            self._saw_plain = False
             self._mod_candidates = []

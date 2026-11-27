@@ -70,6 +70,40 @@ def test_disabled_engine_is_never_available(monkeypatch, tmp_path):
     assert eng.organize("内容超过最小长度了吗") == ("", "unavailable")
 
 
+def test_status_never_loads_weights(monkeypatch, tmp_path):
+    """状态查询只做文件级检查，绝不加载 1.9 GB 权重。
+
+    设置窗口的「关于」「润色」两页构造时都会调 status()；一旦这里加载模型，
+    打开设置就会让常驻内存暴涨且永不释放。本用例是关键回归门禁。
+    """
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    monkeypatch.setattr(LocalTextEngine, "_candidate_model_paths", lambda self: [model])
+
+    def boom(*_a, **_k):
+        raise AssertionError("status() 不应调用 _get_llm()")
+
+    eng = _engine(llm_model_path=str(model))
+    monkeypatch.setattr(eng, "_get_llm", boom)
+    assert "文件已就绪" in eng.status()
+    assert eng._llm is None
+
+
+def test_status_reports_loaded_state(monkeypatch, tmp_path):
+    """真正用过 LLM 后，状态应显示「已加载」，提示保持准确。"""
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    eng = _engine(llm_model_path=str(model))
+    eng._llm = object()
+    assert "已加载" in eng.status()
+
+
+def test_status_disabled_and_missing(monkeypatch):
+    monkeypatch.setattr(LocalTextEngine, "_candidate_model_paths", lambda self: [])
+    assert "未启用" in _engine(llm_enabled=False).status()
+    assert "不存在" in _engine().status()
+
+
 def test_config_defaults_exist():
     assert "organize_llm" in DEFAULT_SETTINGS
     assert "organize_min_chars" in DEFAULT_SETTINGS

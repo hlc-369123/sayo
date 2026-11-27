@@ -62,9 +62,18 @@ class LocalTextEngine:
         return self.enabled and self.model_path.is_file()
 
     def status(self) -> str:
+        """返回模型就绪状态，仅做文件级检查，绝不加载 GGUF 权重。
+
+        背景：设置窗口的「关于」「润色」两页在构造时都会调用本方法。旧实现
+        在这里调 _get_llm() 把 1.9 GB 权重读进内存，仅为了显示一行状态文字，
+        且加载后常驻不释放——用户只要打开一次设置，内存就从 ~1.9 GB 涨到
+        ~2.8 GB。模型加载推迟到真正使用深度改写 / 翻译 / 问答 / 整理时
+        （_generate → _get_llm），功能与首次加载提示完全不变。
+        """
         if not self.enabled:
             return "未启用本地模型（仅确定性文本命令可用）"
-        if not self.model_path.is_file():
+        path = self.model_path
+        if not path.is_file():
             try:
                 from ..config import user_data_dir
                 llm_dir = user_data_dir() / "llm"
@@ -72,12 +81,10 @@ class LocalTextEngine:
                 llm_dir = "~/Library/Application Support/sayo/llm"
             return ("本地模型文件不存在：把任意 Qwen2.5 等 GGUF 模型放进 "
                     f"{llm_dir} 目录，或在「设置 → 润色」里指定模型路径后保存")
-        if self._llm is None:
-            try:
-                self._get_llm()
-            except Exception as exc:
-                return f"本地模型加载失败：{exc}"
-        return f"本地模型已就绪：{self.model_path.name}" if self._llm else self._load_error
+        # 已加载则报告真实状态；未加载只说明文件就绪，首次使用时会自动加载。
+        if self._llm is not None:
+            return f"本地模型已就绪：{path.name}（已加载）"
+        return f"本地模型文件已就绪：{path.name}（首次使用时自动加载）"
 
     def _get_llm(self):
         if self._llm is not None:

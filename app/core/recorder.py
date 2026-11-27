@@ -275,20 +275,26 @@ class Recorder:
         finally:
             _PROBE_LOCK.release()
 
-    def _start_event_pair_for_test(self) -> None:
-        """换一对全新的停流 Event。
+    def _start_event_pair_for_test(self):
+        """换一对全新的停流 Event，返回 (stop, inactive)。
 
         每轮录音都是独立生命周期：上一轮 stop() 的守护线程持有旧 Event，
         换新的保证它不会被本轮 clear() 干扰而空等。测试也可直接调用它来
         构造录音中状态，不依赖真实硬件。
+
+        返回事件对供本轮的 callback 闭包捕获——关键的竞态修复：callback
+        绝不能动态读 self._stop_event，否则 stop→start 后旧流的迟到回调
+        看到的是「新一轮未 set 的 Event」，不会 abort，反而把旧流音频写进
+        新一轮的 chunks（新旧混音），且旧的 inactive 永不置位。
         """
         self._stop_event = threading.Event()
         self._inactive_event = threading.Event()
+        return self._stop_event, self._inactive_event
 
     def start(self, device=None, *, force_probe: bool = False) -> None:
         if self._recording:
             return
-        self._start_event_pair_for_test()
+        stop_event, inactive_event = self._start_event_pair_for_test()
         try:
             import sounddevice as sd
         except ImportError as exc:
@@ -316,6 +322,15 @@ class Recorder:
         self._silent_checked = False
         self.device_name = self.default_input_name()
         self._recording = True
+        # 本轮 callback / finished 闭包捕获本轮事件：旧流的迟到回调看到的是
+        # 自己那轮已 set 的 stop_event，立即 abort，不会污染新一轮音频。
+        def _callback_for_session(indata, frames, time_info, status):
+            return self._callback(indata, frames, time_info, status,
+                                  stop_event=stop_event)
+
+        def _finished_for_session():
+            return self._on_stream_finished(inactive_event=inactive_event)
+
         try:
             self._stream = sd.InputStream(
                 samplerate=SAMPLE_RATE,
@@ -323,8 +338,8 @@ class Recorder:
                 dtype="float32",
                 blocksize=int(SAMPLE_RATE * 0.05),  # 50ms
                 device=device,
-                callback=self._callback,
-                finished_callback=self._on_stream_finished,
+                callback=_callback_for_session,
+                finished_callback=_finished_for_session,
             )
             self._stream.start()
         except Exception as exc:
@@ -334,8 +349,8 @@ class Recorder:
                     self._stream = sd.InputStream(
                         samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="float32",
                         blocksize=int(SAMPLE_RATE * 0.05), device=None,
-                        callback=self._callback,
-                        finished_callback=self._on_stream_finished)
+                        callback=_callback_for_session,
+                        finished_callback=_finished_for_session)
                     self._stream.start()
                     device = None
                 except Exception as exc2:
@@ -355,18 +370,20 @@ class Recorder:
             pass
         self._start_guard()
 
-    def _on_stream_finished(self) -> None:
+    def _on_stream_finished(self, inactive_event=None) -> None:
         """PortAudio 在流变 inactive 时调用（此时再 stop() 不会阻塞）。
 
         这是绕过 CoreAudio 死锁的关键信号：不主动调 Pa_StopStream 去等 IO
         线程，而是让 callback 抛 CallbackAbort 促使流自行结束。
+        inactive_event 由本轮闭包传入；直接调用时回退实例属性（兼容测试）。
         """
-        self._inactive_event.set()
+        (inactive_event or self._inactive_event).set()
 
-    def _callback(self, indata, frames, time_info, status) -> None:
+    def _callback(self, indata, frames, time_info, status, stop_event=None) -> None:
         # 请求停止后，从 callback 内部返回 paAbort：PortAudio 会尽快让流
         # inactive 并回调 finished_callback。绝不在 GUI 线程直接 stop 流。
-        if self._stop_event.is_set():
+        # stop_event 由本轮闭包传入；直接调用时回退实例属性（兼容测试）。
+        if (stop_event or self._stop_event).is_set():
             if _CALLBACK_ABORT is not None:
                 raise _CALLBACK_ABORT
             return

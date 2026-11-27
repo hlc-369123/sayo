@@ -64,7 +64,12 @@ class LiveTranscriber:
         return self._thread is not None and self._thread.is_alive()
 
     def start(self, snapshot: Callable[[], np.ndarray]) -> None:
+        # 上一轮 stop() 只置了事件不 join（避免 GUI 线程卡 1.2s），这里若
+        # 旧线程仍在推理就复用它、只更新 snapshot，绝不启动第二个线程——
+        # 旧实现无条件建新线程 + clear 同一个 Event，会让旧线程复活，
+        # 两个线程并发用同一个 int8 引擎。
         if self.running:
+            self._snapshot = snapshot
             return
         self._snapshot = snapshot
         self._stop.clear()
@@ -74,10 +79,10 @@ class LiveTranscriber:
         self._thread.start()
 
     def stop(self) -> None:
+        # 非阻塞：只通知工作线程退出。原来在 GUI 线程 join(timeout=1.2)
+        # 会在模型推理慢时卡住停止键近 1 秒；且超时后无条件 _thread=None，
+        # 紧接着 start() 又建新线程，旧线程因 Event 被 clear 而继续跑。
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=1.2)
-            self._thread = None
 
     def _emit(self, text: str) -> None:
         if text == self.last_text:

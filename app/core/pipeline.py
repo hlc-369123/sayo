@@ -32,7 +32,8 @@ class DictationResult:
     model: str = ""
     mode: str = "dictate"
     applied: list[str] = field(default_factory=list)
-    duration_ms: int = 0
+    duration_ms: int = 0          # 整条流水线耗时（润色/存储等都在内，UI 显示用）
+    asr_ms: int = 0               # 纯 ASR 推理耗时（埋点 T1_asr 用，口径独立）
     audio_seconds: float = 0.0
     audio_path: str = ""
     tone: str = ""
@@ -105,7 +106,8 @@ class DictationPipeline:
         raw = asr_result.text
         result = DictationResult(
             raw=raw, text=raw, language=asr_result.language, model=asr_result.model,
-            mode=mode, duration_ms=asr_result.elapsed_ms, audio_seconds=audio_seconds,
+            mode=mode, duration_ms=asr_result.elapsed_ms,
+            asr_ms=asr_result.elapsed_ms, audio_seconds=audio_seconds,
             audio_path=audio_path, tone=tone, context=ctx,
             warnings=list(asr_result.warnings),
         )
