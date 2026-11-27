@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import socket
+import threading
 
 _ORIGINALS: dict[str, object] = {}
 _INSTALLED = False
@@ -17,20 +18,27 @@ class NetworkBlocked(RuntimeError):
     pass
 
 
+# Windows 没有 socket.AF_UNIX（老系统 / 精简运行库都可能缺），取不到就退化为 None，
+# 避免离线守卫在 Windows 上直接抛 AttributeError 把主流程带崩。
+_AF_UNIX = getattr(socket, "AF_UNIX", None)
+
+
 def enforce_offline_lock(allow_local_unix: bool = True) -> None:
     global _INSTALLED
     if _INSTALLED:
         return
 
+    def _is_local_unix(sock) -> bool:
+        return (allow_local_unix and _AF_UNIX is not None
+                and getattr(sock, "family", None) == _AF_UNIX)
+
     def blocked_connect(self, address, *args, **kwargs):
-        family = getattr(self, "family", None)
-        if allow_local_unix and family == socket.AF_UNIX:
+        if _is_local_unix(self):
             return _ORIGINALS["connect"](self, address, *args, **kwargs)
         raise NetworkBlocked(f"离线模式：已阻止网络连接到 {address!r}")
 
     def blocked_connect_ex(self, address, *args, **kwargs):
-        family = getattr(self, "family", None)
-        if allow_local_unix and family == socket.AF_UNIX:
+        if _is_local_unix(self):
             return _ORIGINALS["connect_ex"](self, address, *args, **kwargs)
         return 111  # ECONNREFUSED
 
@@ -59,6 +67,59 @@ def offline_lock_active() -> bool:
     return _INSTALLED
 
 
+_WINDOW_DEPTH = 0
+_WINDOW_LOCK = threading.Lock()
+_RELOCK_ON_EXIT = False     # 进入第一个放行窗口之前，离线锁是否本来是开启的
+
+
+class _NetworkWindow:
+    """仅在准备语音模型时临时放行网络，退出后立即恢复离线锁。
+
+    支持嵌套，也支持多个线程同时各开一个窗口（后进先出不一定成立）：
+    重锁判断只用「打开第一个窗口时」的记录，且 depth 归零才真正重锁。
+    这样无论哪个窗口最后退出，都不会把网络永久留在放行状态。
+    """
+
+    def __enter__(self):
+        global _WINDOW_DEPTH, _RELOCK_ON_EXIT
+        with _WINDOW_LOCK:
+            if _WINDOW_DEPTH == 0:
+                _RELOCK_ON_EXIT = _INSTALLED
+                if _INSTALLED:
+                    _restore_network()
+            _WINDOW_DEPTH += 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        global _WINDOW_DEPTH
+        with _WINDOW_LOCK:
+            _WINDOW_DEPTH = max(0, _WINDOW_DEPTH - 1)
+            if _WINDOW_DEPTH == 0 and _RELOCK_ON_EXIT:
+                enforce_offline_lock()
+        return False
+
+
+def network_allowed() -> _NetworkWindow:
+    """with network_allowed(): 期间允许出站；离开后自动恢复离线锁。"""
+    return _NetworkWindow()
+
+
+def _restore_network() -> None:
+    global _INSTALLED
+    if not _INSTALLED:
+        return
+    if "connect" in _ORIGINALS:
+        socket.socket.connect = _ORIGINALS["connect"]  # type: ignore[assignment]
+    if "connect_ex" in _ORIGINALS:
+        socket.socket.connect_ex = _ORIGINALS["connect_ex"]  # type: ignore[assignment]
+    if "create_connection" in _ORIGINALS:
+        socket.create_connection = _ORIGINALS["create_connection"]  # type: ignore[assignment]
+    if "urlopen" in _ORIGINALS:
+        import urllib.request
+        urllib.request.urlopen = _ORIGINALS["urlopen"]  # type: ignore[assignment]
+    _INSTALLED = False
+
+
 def audit_source(root: str) -> list[str]:
     """静态审计：列出源码中出现的联网关键字（应为空）。仅用于构建期自检。"""
     import re
@@ -71,7 +132,8 @@ def audit_source(root: str) -> list[str]:
     )
     hits: list[str] = []
     for p in Path(root).rglob("*.py"):
-        if p.name == "offline.py":  # 守卫本体含被审计的关键字，跳过
+        if p.name in {"offline.py", "model_download.py"}:
+            # 守卫本体 / 用户主动触发的模型下载器含被审计关键字，跳过
             continue
         if any(part in {"build", "dist", ".venv", "scripts", "tests"} for part in p.parts):
             continue

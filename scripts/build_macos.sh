@@ -20,14 +20,17 @@ if [[ ! -x "$VENV/bin/python" ]]; then python3 -m venv "$VENV"; fi
 
 echo "=== 2/6 图标（安装包不含模型，模型完整性不再影响构建） ==="
 QT_QPA_PLATFORM=offscreen "$VENV/bin/python" scripts/make_icon.py
-if [[ -d "$ROOT/models/sensevoice" ]]; then
+if [[ -d "$ROOT/models/sensevoice" && "${SAYO_SKIP_MODEL_CHECK:-0}" != "1" ]]; then
   "$VENV/bin/python" scripts/verify_offline.py --check-models || true
 fi
 
 echo "=== 3/6 单元测试 ==="
-PYTEST_TMP="$(mktemp -d)"
-SAYO_DATA=/tmp/qt-build-test "$VENV/bin/python" -m pytest -q tests \
-  --basetemp="$PYTEST_TMP" -p no:cacheprovider
+# CI 上（没有模型、机器慢）用 SAYO_SKIP_TESTS=1 跳过，测试由 ci.yml 单独把关
+if [[ "${SAYO_SKIP_TESTS:-0}" != "1" ]]; then
+  PYTEST_TMP="$(mktemp -d)"
+  SAYO_DATA=/tmp/qt-build-test "$VENV/bin/python" -m pytest -q tests \
+    --basetemp="$PYTEST_TMP" -p no:cacheprovider
+fi
 
 echo "=== 4/6 PyInstaller 打包（onedir + .app，模型不随包） ==="
 # 重复构建时把上一轮产物改名移走（重命名而非批量删除），保证幂等且不被安全策略拦截

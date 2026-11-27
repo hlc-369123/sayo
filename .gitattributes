@@ -1,0 +1,11 @@
+# 统一行尾：仓库里一律 LF。
+# Windows 上如果用 core.autocrlf=true 提交，会把整文件转成 CRLF，
+# 导致 diff 从几百行虚增到几千行（历史上 main.py 就踩过）。
+* text=auto eol=lf
+
+# 二进制资源不做行尾转换，避免图标/音频被损坏
+*.ico  binary
+*.icns binary
+*.png  binary
+*.wav  binary
+*.onnx binary

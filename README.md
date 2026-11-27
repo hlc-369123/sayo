@@ -1,14 +1,14 @@
 # 轻述 sayo · 本地离线语音输入工具
 
 <p align="center">
-  <img src="assets/icon-rounded.png" alt="轻述 sayo" width="180">
+  <img src="assets/icon.png" alt="轻述 sayo" width="180">
 </p>
 
 <p align="center">
   <a href="https://github.com/hlc-369123/sayo/actions/workflows/ci.yml"><img src="https://github.com/hlc-369123/sayo/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/hlc-369123/sayo/releases"><img src="https://img.shields.io/github/v/release/hlc-369123/sayo" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-  <a href="#运行环境要求"><img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="Platform: macOS"></a>
+  <a href="#运行环境要求"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey.svg" alt="Platform: macOS / Windows"></a>
 </p>
 
 <p align="center"><em>Speak naturally. Write effortlessly. · 说得自然，写得轻松。</em></p>
@@ -17,9 +17,10 @@
 > **运行时完全离线**：音频采集、语音识别、文本润色、历史存储都在本机完成，
 > 不登录、不激活、不联网、不更新检查、不遥测、无任何出站网络请求。
 >
-> **两种「模型」要说清楚**：① **语音识别模型必须下载一次**——安装包不含，首次使用前联网下载约 240 MB，
-> 之后永久离线；② **本地大模型是可选功能**——安装包不含、不会自动下载，需要自己放 GGUF 权重，
-> 没配也不会影响听写，整理自动走本机规则。详见[离线承诺](#离线承诺务必先读)与[第 0 步](#第-0-步下载语音模型仅第一次需联网)。
+> **两种「模型」要说清楚**：① **语音识别模型必须获取一次**——安装包不含，约 240 MB。
+> macOS 用仓库里的独立脚本下载；Windows 安装版在首次启动时由应用自己在后台下载（失败会自动重试，
+> 成功后不再联网）。之后永久离线；② **本地大模型是可选功能**——安装包不含、不会自动下载，需要自己放 GGUF 权重，
+> 没配也不会影响听写，整理自动走本机规则。详见[离线承诺](#离线承诺务必先读)与[第 0 步](#第-0-步获取语音模型仅第一次需联网)。
 
 ---
 
@@ -67,18 +68,22 @@
 | 个人词典 | 人名 / 品牌 / 术语热词偏置 + 同音 / 近形纠错 |
 | 语音编辑选中文字 | 选中一段文字后用语音指令改写、缩短、扩写、要点化、翻译、问答 |
 | 本地历史 | SQLite 存本机，可搜索、导出、按天保留、一键清空 |
-| 全局快捷键 | macOS 系统级 Carbon 热键，**不需要「输入监控」授权**，覆盖安装也不失效 |
-| 运行时完全离线 | 进程级离线锁封锁一切 IP 连接；源码可直接审计联网调用（首次下载语音模型由独立脚本完成） |
+| 全局快捷键 | macOS：系统级 Carbon 热键，**不需要「输入监控」授权**，覆盖安装也不失效；Windows：默认**单按 `Alt`**，也可录 `Ctrl` / `Win` 单键或任意组合键 |
+| 运行时完全离线 | 进程级离线锁封锁一切 IP 连接；**唯一例外是获取语音模型这一次**（macOS 走独立脚本，Windows 首启由应用后台下载并校验 SHA-256），源码可静态审计联网调用 |
 
 ---
 
 ## 离线承诺（务必先读）
 
-- **应用本体完全离线**：推理库、Qt、PortAudio 随安装包分发；**语音模型不随包**，
-  首次使用前运行一次 `scripts/install_models.command` 联网下载到用户目录
-  （默认 int8 约 240 MB；`--full` 加 fp32 约 940 MB）。下载完成后应用运行期间**零网络请求**。
-- 模型下载由**独立脚本**在应用之外完成，脚本成功后不会再被应用调用；应用自身的离线锁不受影响。
-- 运行时没有任何 `requests / urllib / http / openai` 等调用；启动时安装**进程级离线锁**，
+- **应用本体完全离线**：推理库、Qt、PortAudio 随安装包分发；**语音模型不随包**，只获取一次
+  （默认 int8 约 240 MB；`--full` 加 fp32 约 940 MB）。获取完成后应用运行期间**零网络请求**。
+- 获取方式按平台分两条，互不影响：
+  - **macOS**：在应用之外运行 `scripts/install_models.command`，应用进程本身不联网。
+  - **Windows**：安装版首次启动时由 `app/core/model_bootstrap.py` 在后台线程下载（逐个文件校验 SHA-256，
+    失败重试 2 次，仍失败则下次启动再试，成功后写入状态文件不再请求）；也可以在
+    设置 → 识别 → 下载语音模型 里手动触发并看进度。
+- 下载期间离线锁只对本次下载**临时放行**，结束后立即恢复；未就绪时应用照常可用（提示模型未就绪，不假装有结果）。
+- 运行时没有任何 `requests / httpx / openai` 等调用；启动时安装**进程级离线锁**，
   禁止一切 `AF_INET/AF_INET6` 连接（只放行本机 `AF_UNIX` 进程间通信）。
 - 可用两种方式复核：`python -m app.main --self-check` 与 `python scripts/verify_offline.py`
   （后者会在**封锁所有 IP 连接后**仍完成一次真实识别，证明识别不需要网络）。
@@ -95,7 +100,7 @@
 | 平台 | 最低版本 | 架构 | 安装包形态 | 测试状态 |
 | --- | --- | --- | --- | --- |
 | macOS | 11 Big Sur+ | Apple Silicon / Intel x86_64 | `.app` → DMG / PKG | **主要测试平台** |
-| Windows | 10 1809 / 11 | x64 | 免安装 ZIP / Inno Setup `setup.exe` | 代码支持，待更多实测 |
+| Windows | 10 1809 / 11 | x64 | 安装版 `setup.exe`（含卸载入口）/ 免安装 ZIP | **已实测**：安装、卸载、默认 `Alt` 听写、模型自动下载 |
 | Linux | glibc ≥ 2.28 | x64 / arm64 | `tar.gz` 解压即用（可选 AppImage） | 代码支持，待更多实测 |
 
 ### 硬件
@@ -125,20 +130,24 @@ Python 解释器、推理库、Qt 都随 `.app` / EXE 打包。
 
 安装包按平台分开，**只下载自己系统对应的那一个**；不需要开发环境。
 
-#### macOS — 最新版 `v1.0.1`
+#### macOS — `v1.0.1`
 
 - **[DMG](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/sayo-1.0.1-macos.dmg)**（约 70 MB）：双击挂载 → 拖进「应用程序」。[校验文件](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/sayo-1.0.1-macos.dmg.sha256)
 - **[PKG](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/sayo-1.0.1-macos.pkg)**（约 62 MB）：双击按向导安装到 `/Applications`。[校验文件](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/sayo-1.0.1-macos.pkg.sha256)
 
-#### Windows — 当前 `v1.0.0`
+#### Windows — `v1.0.1`
 
-- **[Windows setup.exe](https://github.com/hlc-369123/sayo/releases/download/v1.0.0/sayo-1.0.0-windows-setup.exe)**（约 47 MB）：双击按向导安装。[校验文件](https://github.com/hlc-369123/sayo/releases/download/v1.0.0/sayo-1.0.0-windows-setup.exe.sha256)
-- Windows 适配分支仍在验收中，本版暂不提供 v1.0.1；后续发布会在 Releases 同步更新。
+- **[setup.exe](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/sayo-1.0.1-windows-setup.exe)**（约 45 MB）：双击按向导安装，
+  **不需要管理员权限**，装完桌面只出现一个「轻述 sayo」图标。[校验文件](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/sayo-1.0.1-windows-setup.exe.sha256)
+- 也可以用仓库里的 `scripts/install_sayo.ps1` 自动下载 + 校验 + 安装（按平台找资产，缺 `.sha256` 会拒绝安装）。
+- 免安装 ZIP 不随 Release 分发：需要时用 `scripts/build_windows.ps1` 自行构建（产物在 `dist/`）。
 
-> **GitHub 仓库只存源码**：二进制产物在 `.gitignore` 中被忽略，不进仓库。
-> 官方安装包统一发布在 **[Releases](https://github.com/hlc-369123/sayo/releases)**（macOS 取 v1.0.1，Windows 取 v1.0.0）。
-> 安装包**不含模型**；下载后可用对应 `.sha256` 校验（macOS：`shasum -a 256 -c <文件名>.sha256`）。
-> 模型用仓库里的 `scripts/install_models.command` 下载一次，见下面「第 0 步」。
+Linux 目前请从源码构建，见「[二次开发与构建](#二次开发与构建简述)」。
+
+> **GitHub 仓库只存源码**：安装包、ZIP、模型权重都在 `.gitignore` 里，不进仓库。
+> 官方安装包统一发布在 **[Releases](https://github.com/hlc-369123/sayo/releases)**（各平台取同名版本）。
+> 安装包**不含模型**；下载后可用对应 `.sha256` 校验（macOS：`shasum -a 256 -c <文件名>.sha256`，Windows：`Get-FileHash`）。
+> 模型获取见下面「第 0 步」。
 
 - **macOS**
   - DMG：双击挂载 → 把「轻述 sayo」拖进「应用程序」。
@@ -146,12 +155,23 @@ Python 解释器、推理库、Qt 都随 `.app` / EXE 打包。
   - 未公证的版本（ad-hoc 签名）首次启动若被拦截：右键 → 打开，或
     系统设置 → 隐私与安全性 → 仍要打开。
   - 气密 / 断网环境：用仓库里的 `scripts/install_offline_macos.sh` 从 U 盘直接装（去 quarantine + 自动清理旧授权记录）。
-- **Windows**：双击 v1.0.0 的 `setup.exe` 按向导安装。
+- **Windows**
+  - `setup.exe`：双击 → 下一步到底。装完桌面只有 **1 个**「轻述 sayo」快捷方式；
+    开始菜单里是同一个程序，没有额外的工具图标。
+  - 已装旧版时直接覆盖安装即可：安装程序会先静默关掉正在运行的实例，不需要你手动退出。
+  - 卸载：**设置 → 应用 → 轻述 sayo → 卸载**，或安装目录里的 `卸载sayo.exe`（两者等价）。
+    卸载只删程序文件，你的听写历史、设置与已下载的模型都保留。
+  - 首次运行会提示需要麦克风权限：设置 → 隐私和安全性 → 麦克风 → 允许桌面应用访问。
+  - 免安装 ZIP：解压到任意目录双击 `sayo.exe`，无卸载入口（想彻底清掉直接删目录）。
 - **Linux**：当前未提供正式安装包，请按 [`docs/开发指南.md`](docs/开发指南.md) 从源码构建。
 
-#### 第 0 步：下载语音模型（仅第一次，需联网）
+#### 第 0 步：获取语音模型（仅第一次，需联网）
 
-**双击**仓库里的 `scripts/install_models.command`（也可从 [Releases 单独下载](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/install_models.command)），
+**Windows**：安装完直接启动即可，什么都不用做。应用会在后台线程自动下载 int8 模型、词表与 VAD
+到 `%APPDATA%\sayo\models\`，逐个校验 SHA-256；失败自动重试 2 次，仍未成功则下次启动继续尝试，
+成功写状态文件后不再请求。想手动触发或看进度：设置 → 识别 → 下载语音模型。
+
+**macOS**：**双击**仓库里的 `scripts/install_models.command`（也可从 [Releases 单独下载](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/install_models.command)），
 它会把 int8 模型、词表、VAD 下载到 `~/Library/Application Support/sayo/models/` 并逐个校验 SHA-256，
 约 240 MB。**这一步只需双击，不用输入任何命令**，日常听写这样就够了。
 
@@ -159,7 +179,7 @@ Python 解释器、推理库、Qt 都随 `.app` / EXE 打包。
 
 - 默认装的是 int8 轻量模型（约 240 MB）。全精度（fp32，约 940 MB）保留完整识别细节，在**轻声、长句、嘈杂环境**下更稳、更少错字；代价是**多下约 700 MB、占用更多内存**。
 - 两者不用二选一：装了全精度后，也能在「设置 → 识别 → 权重精度」里随时切回 int8。
-- 确实需要全精度时**才需要敲命令**：打开「终端」（Command + 空格 搜「终端」），把 `install_models.command` 文件**拖进终端窗口**（路径会自动填好），在后面临一个空格加 `--full`，回车执行：
+- 确实需要全精度时**才需要敲命令**：打开「终端」（Command + 空格 搜「终端」），把 `install_models.command` 文件**拖进终端窗口**（路径会自动填好），后面补一个空格加 `--full`，回车执行：
 
   ```bash
   /路径/到/install_models.command --full
@@ -167,11 +187,11 @@ Python 解释器、推理库、Qt 都随 `.app` / EXE 打包。
 
   下载中断后重复同样命令会自动续传；下载慢可在命令前加 `HF_MIRROR=https://huggingface.co` 换源。
 
-- 下载脚本是独立进程，**应用本身永不联网**；完成后可断网长期使用。
-- 模型放在用户目录，覆盖安装 / 升级应用不会丢，也不用往只读的 `.app` 里写文件。
+- macOS 的下载脚本是独立进程，**应用本身永不联网**；Windows 只在下载期间临时放行网络，完成后立即恢复离线锁。
+- 模型放在用户目录，覆盖安装 / 升级应用不会丢，也不用往只读的安装目录里写文件。
 - 下载源可用 `HF_MIRROR` / `GH_MIRROR` 环境变量替换；支持断点续传，重复运行自动跳过已校验文件。
-- 完全气密的断网机器：在有网机器上跑一次脚本，把 `~/Library/Application Support/sayo/models/`
-  整个目录拷到目标机器同名路径即可。
+- 完全气密的断网机器：在有网机器上跑一次下载，把模型目录整个拷到目标机器同名路径即可
+  （macOS `~/Library/Application Support/sayo/models/`，Windows `%APPDATA%\sayo\models\`）。
 
 ### B. 拿到「源码」（开发者 / 想自己改的人）
 
@@ -185,6 +205,9 @@ Python 解释器、推理库、Qt 都随 `.app` / EXE 打包。
 ---
 
 ## 第一次使用（三步）
+
+> 下面的按键以 macOS 为例。**Windows 上默认是单按 `Alt`**（不需要组合键），
+> 想把 `⌘` 换成 `Ctrl` 的部分在 Windows 上就是 `Ctrl`；菜单栏对应 Windows 的**托盘图标**。
 
 1. 启动后，菜单栏出现图标。把光标点进任意输入框。
 2. 同时按 **⌘ + Shift + 空格**（键盘最下方那个空格键，左右 Command 都可以）→ 说话 → 再按一次结束。
@@ -324,4 +347,5 @@ tests/                单元测试与语音样本（约 90+ 项）
 
 - **[`docs/使用手册.md`](docs/使用手册.md)** —— 面向最终用户：安装详解、权限逐项设置、完整使用步骤、设置全表、故障排查、隐私与数据。
 - **[`docs/开发指南.md`](docs/开发指南.md)** —— 面向开发者 / 贡献者：开发环境、源码结构、从源码运行、如何修改、各平台构建、离线分发、测试、打包规格。
+- **[`docs/发布与平台分发.md`](docs/发布与平台分发.md)** —— 面向维护者：一份源码怎么同时出 macOS / Windows 安装包、发版流程、验收清单、红线与回滚。
 - **[`models/README.md`](models/README.md)** —— 离线模型的精度 / GPU 关系与完整性校验说明。

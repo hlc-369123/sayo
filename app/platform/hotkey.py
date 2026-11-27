@@ -699,8 +699,10 @@ def event_tap_available() -> tuple[bool, str]:
 
     Carbon 热键不需要这个能力；只有回退到 pynput 时才有意义。
     """
+    if sys.platform == "win32":
+        return True, "Windows 由系统级键盘监听实现，无需额外授权"
     if sys.platform != "darwin":
-        return True, "非 macOS 平台无需输入监控权限"
+        return True, "当前系统无需额外输入监听授权"
     try:
         import Quartz  # type: ignore
 

@@ -1,3 +1,5 @@
 -r requirements.txt
 pyinstaller==6.22.3
+# 打包前由 scripts/make_icon.py 生成各自平台图标文件，需要 Pillow
+pillow>=10.0
 pytest>=8.0

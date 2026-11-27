@@ -16,13 +16,14 @@ DEBUG_CONSOLE = os.environ.get("SAYO_DEBUG_CONSOLE", "0") == "1"
 _m = re.search(r'^APP_VERSION = "(.*)"$', (ROOT / "app" / "config.py").read_text(encoding="utf-8"), re.M)
 APP_VERSION = _m.group(1) if _m else "1.0.1"
 
-ICON = ROOT / "assets" / ("icon.icns" if IS_MAC else "icon.ico" if IS_WIN else "icon.png")
+ICON = ROOT / "assets" / ("icon.icns" if IS_MAC else "icon-windows.ico" if IS_WIN else "icon.png")
 if not ICON.exists():
     ICON = ROOT / "assets" / "icon.png"
 
 # 图标、内置词表随包。语音模型体积 0.24–1.1 GB，不随安装包分发：
-# 由 scripts/install_models.command 在首次使用时下载到用户数据目录的 models/。
-# 应用运行时仍然完全离线（离线锁禁止一切 IP 连接），下载只由这个独立脚本完成。
+# macOS 由 scripts/install_models.command 下载；Windows 安装版由 app/core/model_bootstrap.py
+# 在首启后台下载（有限次数、逐个校验 SHA-256，成功后永不再请求）。
+# 除此之外应用不发起任何网络请求（离线锁禁止一切 IP 连接，下载期间才临时放行）。
 datas = [
     (str(ROOT / "assets"), "assets"),
 ]

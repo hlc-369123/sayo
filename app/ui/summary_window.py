@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from ..platform.inject import Clipboard, insert_text
 from ..platform import permissions
+from ..platform.platform_text import paste_text
 
 
 class SummaryWindow(QWidget):
@@ -134,14 +135,15 @@ class SummaryWindow(QWidget):
         if not text:
             self.lb_status.setText("还没有可粘贴的结果")
             return
+        paste = paste_text()
         granted = permissions.accessibility_granted()
         if granted is False:
             Clipboard.write(text)
-            self.lb_status.setText("辅助功能未授权：已复制，粘贴请按 ⌘V（见菜单栏授权引导）")
+            self.lb_status.setText(f"辅助功能未授权：已复制，粘贴请按 {paste}（见菜单栏授权引导）")
             return
         Clipboard.write(text)  # paste 方式本身依赖剪贴板
         try:
             insert_text(text, method="paste", restore_clipboard=False)
-            self.lb_status.setText("已发送 ⌘V：目标应用有选中文字时会被替换，否则插入光标处")
+            self.lb_status.setText(f"已发送 {paste}：目标应用有选中文字时会被替换，否则插入光标处")
         except Exception as exc:
-            self.lb_status.setText(f"自动粘贴不可用（{exc}）；内容已复制，可手动 ⌘V")
+            self.lb_status.setText(f"自动粘贴不可用（{exc}）；内容已复制，可手动 {paste}")

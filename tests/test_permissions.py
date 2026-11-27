@@ -1,6 +1,7 @@
 """权限自检与异步申请流程（不触发真实系统弹窗）。"""
 from __future__ import annotations
 
+import sys
 import threading
 
 from app.platform import permissions
@@ -10,7 +11,11 @@ def test_check_returns_expected_keys():
     states = permissions.check()
     keys = {s.key for s in states}
     assert "microphone" in keys
-    assert "accessibility" in keys
+    if sys.platform == "win32":
+        # Windows 只有麦克风一项系统授权，不存在辅助功能 / 输入监控
+        assert keys == {"microphone"}
+    else:
+        assert "accessibility" in keys
     assert all(isinstance(s.label, str) and s.label for s in states)
     assert all(isinstance(s.hint, str) for s in states)
 

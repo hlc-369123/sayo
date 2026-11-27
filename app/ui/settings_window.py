@@ -1,22 +1,27 @@
 """设置窗口：快捷键、识别参数、润色规则、个人词典、权限、离线状态。"""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, Slot, QObject
+from PySide6.QtCore import Qt, Signal, Slot, QObject, QThread
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
-    QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QScrollArea,
+    QSizePolicy, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
+    QVBoxLayout, QWidget,
 )
 
 from ..config import (
-    APP_NAME, APP_VERSION, DEFAULT_SETTINGS, PERMISSION_HELP, models_dir, sensitivity_preset,
+    APP_NAME, APP_VERSION, DEFAULT_SETTINGS, PERMISSION_HELP, models_dir,
+    sensitivity_preset, user_models_dir,
 )
-from ..core import accel
+from ..core import accel, model_download
 from ..core.asr import ASREngine
 from ..platform import permissions
 from ..platform.hotkey import valid_hotkey
-from ..platform.keycapture import KeyCapture
+from ..platform.keycapture import create_key_capture
+from ..platform.platform_text import (
+    IS_WIN, combo_text, default_hotkey_hint, need_accessibility_prompt, paste_text,
+)
 from .themes import DEFAULT_THEME, get_theme, theme_items, ui_stylesheet
 
 POST_LABELS = [
@@ -87,6 +92,28 @@ def qt_combo(modifiers, key) -> str | None:
     return "+".join(mods + [plain]) if mods else plain
 
 
+class ModelDownloadThread(QThread):
+    """后台下载语音模型，避免 240 MB 下载卡住设置窗口。"""
+
+    progress = Signal(str, int, int)
+    done = Signal(bool, str)
+
+    def __init__(self, target_dir):
+        super().__init__()
+        self.target_dir = target_dir
+
+    def run(self) -> None:
+        try:
+            # 手动点下载也给 3 次机会（首次 + 重试 2 次），避免一次网络抖动就失败
+            msg = model_download.download_all(
+                self.target_dir,
+                lambda rel, done, total: self.progress.emit(rel, done, total),
+                attempts=3, backoff=(6.0, 15.0))
+            self.done.emit(True, msg)
+        except Exception as exc:
+            self.done.emit(False, str(exc))
+
+
 class HotkeyEdit(QLineEdit):
     """快捷键录入框：点击聚焦后直接按下组合键即可录入，退格/删除/Esc 清空。
 
@@ -103,12 +130,19 @@ class HotkeyEdit(QLineEdit):
 
     def __init__(self, combo: str = ""):
         super().__init__(combo)
-        self.setPlaceholderText("点击此处后按键，如 ⌘+Shift+空格 或单个 Option")
-        self.setToolTip(
-            "点击输入框，然后直接按下想用的组合键（cmd+shift+space、"
-            "ctrl+alt+d）或单个按键（option、fn、字母等）；"
-            "按退格清空。组合键最可靠（免授权）；单键需辅助功能+输入监控授权。")
-        self._capture = KeyCapture()
+        if IS_WIN:
+            self.setPlaceholderText("点击此处后按键，如 Alt / Ctrl+Shift+空格")
+            self.setToolTip(
+                "点击输入框后直接按键：可单独按 Alt、Ctrl、Shift、Win，"
+                "也可按组合键（如 Ctrl+Shift+空格、Alt+D）；按退格或 Esc 清空。"
+                "保存后立即生效。")
+        else:
+            self.setPlaceholderText("点击此处后按键，如 ⌘+Shift+空格 或单个 Option")
+            self.setToolTip(
+                "点击输入框，然后直接按下想用的组合键（cmd+shift+space、"
+                "ctrl+alt+d）或单个按键（option、fn、字母等）；"
+                "按退格清空。组合键最可靠（免授权）；单键需辅助功能+输入监控授权。")
+        self._capture = create_key_capture()
         self._capture_enabled = False
         self._captured.connect(self._on_captured)
 
@@ -130,11 +164,9 @@ class HotkeyEdit(QLineEdit):
     def _on_captured(self, combo: str) -> None:
         # 跨线程调用：tap 在 pump 线程触发，setText 必须在 Qt 主线程。
         try:
-            import pathlib
             from datetime import datetime
-            logdir = pathlib.Path.home() / "Library/Application Support/sayo/logs"
-            logdir.mkdir(parents=True, exist_ok=True)
-            with (logdir / "kc.log").open("a", encoding="utf-8") as f:
+            from ..config import logs_dir
+            with (logs_dir() / "kc.log").open("a", encoding="utf-8") as f:
                 f.write(f"{datetime.now().strftime('%H:%M:%S')} _on_captured combo={combo!r}\n")
         except Exception:
             pass
@@ -171,6 +203,7 @@ class SettingsWindow(QWidget):
     saved = Signal(dict)
     theme_previewed = Signal(str)  # 下拉框切换时实时预览主题（浮层 + 本窗口）
     overlay_style_previewed = Signal(str)  # 浮层样式切换时实时预览（classic/pill）
+    models_ready = Signal()  # 语音模型下载完成，主程序切换到用户模型目录
 
     def __init__(self, settings, storage, pipeline=None):
         super().__init__()
@@ -296,8 +329,12 @@ class SettingsWindow(QWidget):
         self.cb_theme.currentIndexChanged.connect(self._preview_theme)
         f.addRow("听写快捷键", self.ed_hotkey)
         f.addRow("Ask / 编辑快捷键", self.ed_hotkey_ask)
-        hint_left = QLabel("点击输入框后按键即可录入：组合键（⌘+Shift+空格）或单个键（Option / fn / 字母）；退格清空")
-        hint_right = QLabel("组合键免授权最可靠；单键需输入监控授权；保存后立即生效")
+        if IS_WIN:
+            hint_left = QLabel("默认听写键是单按 Alt；点击输入框后可改录单个 Alt / Ctrl / Win 或组合键；退格 / Esc 清空")
+            hint_right = QLabel("系统级热键，免授权；保存后立即生效")
+        else:
+            hint_left = QLabel("点击输入框后按键即可录入：组合键（⌘+Shift+空格）或单个键（Option / fn / 字母）；退格清空")
+            hint_right = QLabel("组合键免授权最可靠；单键需输入监控授权；保存后立即生效")
         hint_left.setWordWrap(True)
         hint_right.setWordWrap(True)
         hint_left.setAlignment(Qt.AlignVCenter)
@@ -413,6 +450,25 @@ class SettingsWindow(QWidget):
         self.sp_max.setRange(10, 1800)
         self.sp_max.setValue(int(s["max_record_seconds"]))
         f.addRow("识别模型", self.cb_model)
+        # 语音模型：安装包不携带，首次在应用内下载一次，之后永久离线
+        self.lb_model = QLabel()
+        self.lb_model.setWordWrap(True)
+        self.pb_model = QProgressBar()
+        self.pb_model.setRange(0, 1000)
+        self.pb_model.setValue(0)
+        self.pb_model.hide()
+        self.btn_model = QPushButton("下载语音模型（约 240 MB）")
+        self.btn_model.clicked.connect(self._download_models)
+        model_box = QWidget()
+        model_lay = QVBoxLayout(model_box)
+        model_lay.setContentsMargins(0, 0, 0, 0)
+        model_lay.setSpacing(4)
+        model_lay.addWidget(self.lb_model)
+        model_lay.addWidget(self.pb_model)
+        model_lay.addWidget(self.btn_model)
+        f.addRow("语音模型", model_box)
+        self._refresh_model_state()
+
         f.addRow("识别语言", self.cb_lang)
         f.addRow("推理后端（GPU）", self.cb_accel)
         f.addRow("权重精度", self.cb_precision)
@@ -618,17 +674,24 @@ class SettingsWindow(QWidget):
                 lb.setWordWrap(True)
                 lb.setAlignment(Qt.AlignVCenter)
                 lay.addWidget(lb)
-            btn = QPushButton("打开系统设置")
+            btn = QPushButton("打开麦克风设置" if IS_WIN else "打开系统设置")
             key = st.key
-            btn.clicked.connect(lambda _, k=key: permissions.open_settings(k))
+            btn.clicked.connect(lambda _, k=key: self._open_permission_settings(k))
             lay.addWidget(btn)
             v.addWidget(box)
+        if IS_WIN:
+            note = QLabel(
+                "Windows 只需麦克风授权；全局快捷键与文字写入输入框都是系统默认能力，"
+                "无需其他系统授权。")
+            note.setWordWrap(True)
+            v.addWidget(note)
         self.sp_retention = QSpinBox()
         self.sp_retention.setRange(0, 3650)
         self.sp_retention.setValue(int(self.settings.get("history_retention_days", 365)))
         self.ck_save_audio = QCheckBox("在本机留存录音文件（默认关闭，仅保存在用户数据目录）")
         self.ck_save_audio.setChecked(bool(self.settings.get("save_audio", False)))
-        btn_perm = QPushButton("一键重新申请系统权限（麦克风 / 辅助功能 / 输入监控）")
+        btn_perm = QPushButton("重新检测麦克风权限" if IS_WIN
+                               else "一键重新申请系统权限（麦克风 / 辅助功能 / 输入监控）")
         btn_perm.clicked.connect(self._request_permissions)
         f = QFormLayout()
         self._tune_form(f)
@@ -691,7 +754,7 @@ class SettingsWindow(QWidget):
         add_row("运行方式", "运行时完全离线 · 模型首次需联网下载一次 · 无账号 · 无更新检查 · 无遥测")
         self.lb_models = add_row(
             "模型状态", "模型完整 ✓" if ok else
-            "模型缺失 ✗  请运行 scripts/install_models.command 下载（仅这一步需联网）\n" + msg)
+            "模型缺失 ✗  请在「识别」页点「下载语音模型」（仅这一步需联网）\n" + msg)
         self.lb_model_dir = add_row("模型目录", str(models_dir()))
         add_row("推理配置", accel.capability_summary(self.settings.data))
         add_row("实时浮层",
@@ -705,14 +768,91 @@ class SettingsWindow(QWidget):
         rows.addStretch(1)
         self.tabs.addTab(page, "关于")
 
+    # ---------------------------------------------------------------- 语音模型
+    def _active_models_dir(self):
+        asr = getattr(getattr(self, "pipeline", None), "asr", None)
+        return getattr(asr, "models_dir", None) or models_dir()
+
+    def _refresh_model_state(self) -> None:
+        # 只比对大小（毫秒级）：设置窗口每次打开都会调用，不能在这里读 240 MB 算哈希。
+        missing = model_download.light_missing(self._active_models_dir())
+        if not missing:
+            self.lb_model.setText("模型完整 ✓ 可以开始听写")
+            self.btn_model.setEnabled(False)
+            self.btn_model.setText("语音模型已安装")
+            return
+        total = sum(f.size for f in missing) / (1024 * 1024)
+        self.lb_model.setText(
+            f"模型未安装：还缺 {len(missing)} 个文件，共约 {total:.0f} MB。\n"
+            "程序会在后台自动下载并重试，也可以点下面的按钮手动开始；下载一次后永久离线。")
+        self.btn_model.setEnabled(True)
+        self.btn_model.setText("下载语音模型")
+
+    def refresh_model_state(self) -> None:
+        """供主程序在后台下载完成后刷新界面。"""
+        self._refresh_model_state()
+
+    def _download_models(self) -> None:
+        if getattr(self, "_model_thread", None) is not None:
+            return
+        self.btn_model.setEnabled(False)
+        self.btn_model.setText("正在下载…")
+        self.pb_model.show()
+        self.pb_model.setValue(0)
+        self.lb_model.setText("正在连接模型镜像…")
+        thread = ModelDownloadThread(user_models_dir())
+        thread.progress.connect(self._on_model_progress)
+        thread.done.connect(self._on_model_done)
+        self._model_thread = thread
+        thread.start()
+
+    @Slot(str, int, int)
+    def _on_model_progress(self, relative: str, done: int, total: int) -> None:
+        pct = int(done * 1000 / total) if total else 0
+        self.pb_model.setValue(max(0, min(1000, pct)))
+        self.lb_model.setText(
+            f"正在下载 {relative}：{done / 1048576:.1f} / {total / 1048576:.1f} MB")
+
+    @Slot(bool, str)
+    def _on_model_done(self, ok: bool, message: str) -> None:
+        self._model_thread = None
+        self.pb_model.hide()
+        if ok:
+            self.lb_model.setText("模型完整 ✓ 可以开始听写")
+            self.btn_model.setText("语音模型已安装")
+            self.btn_model.setEnabled(False)
+            self.models_ready.emit()
+            QMessageBox.information(self, "语音模型", message)
+        else:
+            self.lb_model.setText("下载失败：" + message)
+            self.btn_model.setText("重试下载")
+            self.btn_model.setEnabled(True)
+
     # ---------------------------------------------------------------- 动作
+    def _open_permission_settings(self, key: str) -> None:
+        """打开系统设置并给出可见反馈（以前静默失败，用户以为按钮没反应）。"""
+        ok, note = permissions.open_settings_result(key)
+        box = QMessageBox.information if ok else QMessageBox.warning
+        box(self, "打开系统设置", note)
+
     def _request_permissions(self):
-        permissions.request_all_async(force=True)
-        QMessageBox.information(
-            self, "正在申请权限",
-            "已向系统发起授权，请留意屏幕上弹出的对话框并点「允许」。\n"
-            "若某项曾被拒绝，系统不会再弹窗，会自动带您打开对应的本机设置面板。",
-        )
+        if IS_WIN:
+            # Windows 不能由应用主动弹授权框，直接打开麦克风隐私设置；
+            # 关闭对话框后由调用方刷新权限状态。
+            permissions.open_settings("microphone")
+            QMessageBox.information(
+                self, "麦克风权限",
+                "已打开 Windows 麦克风隐私设置。\n"
+                "请确认「麦克风访问」和「允许桌面应用访问麦克风」两个开关都已开启，"
+                "关闭本提示后权限状态会自动刷新。",
+            )
+        else:
+            permissions.request_all_async(force=True)
+            QMessageBox.information(
+                self, "正在申请权限",
+                "已向系统发起授权，请留意屏幕上弹出的对话框并点「允许」。\n"
+                "若某项曾被拒绝，系统不会再弹窗，会自动带您打开对应的本机设置面板。",
+            )
 
     def _show_devices(self):
         """选择输入麦克风对话框：列表可点选，确定即应用并同步识别页下拉。"""
@@ -823,13 +963,21 @@ class SettingsWindow(QWidget):
         # 无效值直接拒绝保存、保留原可用配置，避免重建热键时整体失败。
         bad = [c for c in (dictate_hotkey, ask_hotkey) if not valid_hotkey(c)]
         if bad:
+            if IS_WIN:
+                advice = (
+                    f"请使用组合键（如 {default_hotkey_hint()}），"
+                    "点击输入框后按下再保存。本次未保存，原有快捷键保持不变。"
+                )
+            else:
+                advice = (
+                    "组合键（如 cmd+shift+space）最可靠、免授权；"
+                    "单个按键（如 option、fn、d）需输入监控授权。"
+                    "请点击输入框后按下一个组合键，然后重新保存。"
+                    "\n本次未保存，原有快捷键保持不变。"
+                )
             QMessageBox.warning(
                 self, "快捷键无法注册",
-                "以下按键无法注册为热键：\n  · " + "\n  · ".join(bad)
-                + "\n\n组合键（如 cmd+shift+space）最可靠、免授权；"
-                  "单个按键（如 option、fn、d）需输入监控授权。"
-                  "请点击输入框后按下一个组合键，然后重新保存。"
-                  "\n本次未保存，原有快捷键保持不变。")
+                "以下按键无法注册为热键：\n  · " + "\n  · ".join(bad) + "\n\n" + advice)
             return
         self.settings.update({
             "hotkey_dictate": dictate_hotkey,

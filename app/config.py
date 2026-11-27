@@ -95,10 +95,9 @@ AUDIO_DIR = user_data_dir() / "audio"
 
 DEFAULT_SETTINGS: dict = {
     # ---- 快捷键 ----
-    # 默认听写键 = ⌘+Shift+空格（Carbon 系统热键，免授权、系统直接分发、100% 可靠）。
-    # 单键 Option 受 macOS 系统限制：修饰键不产生 keyDown/keyUp 事件，
-    # CGEventTap 的 flagsChanged 对真实按键不投递（实测验证），不可靠。
-    "hotkey_dictate": "cmd+shift+space" if sys.platform == "darwin" else "ctrl+shift+space",
+    # Windows 默认听写键 = 单个 Alt（按住/轻按都自然，符合语音输入习惯）；
+    # macOS 仍用 ⌘+Shift+空格（系统对单键修饰键限制较多）。
+    "hotkey_dictate": "cmd+shift+space" if sys.platform == "darwin" else "alt",
     # ⌘+Shift+A 被 macOS 系统保留，Carbon 注册成功但不派发；用 E 代替
     "hotkey_ask": "cmd+shift+e" if sys.platform == "darwin" else "ctrl+shift+e",
     "push_to_talk": False,  # True = 按住说话、松开结束
@@ -194,12 +193,22 @@ def sensitivity_preset(level: str) -> dict:
     return dict(SENSITIVITY_PRESETS.get(level, SENSITIVITY_PRESETS["standard"]))
 
 
-# 供 UI 展示的敏感权限说明
-PERMISSION_HELP = {
-    "microphone": "麦克风：用于采集语音，音频只在本机内存中处理。",
-    "accessibility": "辅助功能：用于模拟 ⌘/Ctrl+V，把文字写入当前输入框；未授权时只写剪贴板。",
-    "input_monitoring": "输入监控（macOS）：新的系统级热键不需要；仅在回退到键盘监听时使用。",
-}
+# 供 UI 展示的敏感权限说明。
+# 两个平台各写各的、互不借鉴：macOS 沿用原文一字不改，Windows 只讲麦克风
+# （Windows 没有辅助功能/输入监控这两套系统授权，照搬 Mac 文案会自相矛盾）。
+if sys.platform == "win32":
+    PERMISSION_HELP = {
+        "microphone": "麦克风：用于采集语音，音频只在本机内存中处理。"
+                      "在 Windows「隐私和安全性 → 麦克风」里允许桌面应用访问即可。",
+        "accessibility": "辅助功能：Windows 没有这项系统授权，全局热键与文字写入均为默认能力。",
+        "input_monitoring": "输入监控：Windows 没有这项系统授权，无需开启。",
+    }
+else:
+    PERMISSION_HELP = {
+        "microphone": "麦克风：用于采集语音，音频只在本机内存中处理。",
+        "accessibility": "辅助功能：用于模拟 ⌘/Ctrl+V，把文字写入当前输入框；未授权时只写剪贴板。",
+        "input_monitoring": "输入监控（macOS）：新的系统级热键不需要；仅在回退到键盘监听时使用。",
+    }
 
 
 class Settings:
@@ -243,6 +252,13 @@ class Settings:
         # 撤销该逻辑：用户可自由选择组合键或单键（含 option/fn），不强制改写。
         # 仅保留 v3 标记键位，避免历史脏值；不再改写 hotkey_dictate。
         self._data.setdefault("hotkey_default_migrated_v3", True)
+        # Windows 默认听写键改为单个 Alt：只迁移仍停留在旧默认值
+        # ctrl+shift+space 的用户，用户在设置里自定义过的组合键保持不动。
+        if sys.platform == "win32" and not self._data.get("hotkey_alt_default_v4"):
+            if str(self._data.get("hotkey_dictate", "")).lower() == "ctrl+shift+space":
+                self._data["hotkey_dictate"] = "alt"
+            self._data["hotkey_alt_default_v4"] = True
+            self.save()
         # 旧配置若停留在最早的「极光 aurora」且无 overlay_style 键，补上默认浮层样式，
         # 不再强制改主题（保留用户当时的视觉选择）。
         if "overlay_style" not in self._data:

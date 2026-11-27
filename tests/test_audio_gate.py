@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from app.core import audio_gate
 from app.core.asr import strip_tags
@@ -11,6 +12,9 @@ from app.core.recorder import read_wav
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "zh_sample.wav"
 SAMPLE_RATE = 16000
+# 模型权重不入库（models/ 在 .gitignore 里），没有权重的机器上跳过端到端识别断言
+_MODEL_DIR = Path(__file__).resolve().parents[1] / "models" / "sensevoice"
+_HAS_MODEL = any((_MODEL_DIR / n).exists() for n in ("model.int8.onnx", "model.onnx"))
 
 
 def _noise(seed: int = 3, seconds: float = 3.0) -> np.ndarray:
@@ -77,6 +81,8 @@ def test_asr_returns_empty_for_noise_not_hallucination():
     assert r.warnings
 
 
+@pytest.mark.skipif(not _HAS_MODEL,
+                    reason="本机没有 models/sensevoice 权重（不入库），跳过端到端识别断言")
 def test_asr_still_transcribes_real_speech():
     from app.config import DEFAULT_SETTINGS, sensitivity_preset
     from app.core.asr import ASREngine

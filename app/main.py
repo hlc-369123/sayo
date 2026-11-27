@@ -18,9 +18,13 @@ from datetime import datetime
 
 from PySide6.QtCore import QEvent, QObject, QTimer, Signal
 
-from .config import APP_NAME, APP_VERSION, Settings, logs_dir, models_dir, resource_root
+from .config import (
+    APP_NAME, APP_VERSION, Settings, logs_dir, models_dir, resource_root, user_models_dir,
+)
 from .core.asr import ASREngine
 from .core.live import LiveTranscriber
+from .core.model_bootstrap import ModelBootstrap
+from .core import model_download
 from .core.offline import enforce_offline_lock, offline_lock_active
 from .core.pipeline import AppContext, DictationPipeline
 from .core.recorder import Recorder, RecorderError, read_wav
@@ -30,6 +34,9 @@ from .platform.context import current_context
 from .platform.focus import choose_output, text_input_focused
 from .platform.hotkey import HotkeyManager, event_tap_available
 from .platform.inject import Clipboard, insert_text
+from .platform.platform_text import (
+    IS_WIN, combo_text, default_hotkey_hint, need_accessibility_prompt, paste_text,
+)
 
 # 进程级离线锁在导入后立即生效（在 Qt / ONNX Runtime 初始化之前）
 _BOOT_SETTINGS = Settings()
@@ -73,13 +80,15 @@ def hotkey_diagnostics(ctrl, reason: str = "") -> dict:
         f"平台：{sys.platform} · 版本：{APP_VERSION}",
         f"快捷键：{h['bindings']}",
         f"后端：{h.get('backend', '?')} · 已注册 {h.get('registered', 0)} 个组合",
-        f"系统热键注册：{h.get('carbon_error') or '成功（免输入监控授权）'}",
+        f"系统热键注册：{h.get('carbon_error') or ('成功' if IS_WIN else '成功（免输入监控授权）')}",
         f"监听线程存活：{h['listener_alive']}",
         f"全局事件监听：{'可用' if h['tap_ok'] else '不可用'} · {h['tap_detail']}",
         f"监听错误：{h['error'] or '无'}",
         f"最近命中：{h['last_hit'] or '（本次启动尚未收到快捷键）'}",
-        "权限：麦克风=%s 辅助功能=%s 输入监控=%s（新后端不需要最后一项）" % (
-            perms.get("microphone"), perms.get("accessibility"), perms.get("input_monitoring")),
+        ("权限：麦克风=%s" % perms.get("microphone")) +
+        ("" if IS_WIN else
+         " 辅助功能=%s 输入监控=%s（新后端不需要最后一项）" % (
+             perms.get("accessibility"), perms.get("input_monitoring"))),
         f"触发原因：{reason or '-'}",
     ]
     path = ""
@@ -205,6 +214,29 @@ def run_cli(settings: Settings, wav: str | None = None) -> int:
                 recorder.stop()
             except Exception:
                 pass
+
+
+def run_probe_json(settings: Settings) -> int:
+    """免麦克风试识别（子进程模式）：只输出一行 JSON，避免拖住主界面。"""
+    import json
+
+    try:
+        _storage, asr, _recorder, pipeline = build_components(settings)
+        ok, msg = asr.check_models()
+        if not ok:
+            print(json.dumps({"ok": False, "error": "语音模型未安装：" + msg},
+                             ensure_ascii=False))
+            return 2
+        sample = resource_root() / "assets" / "sample_zh.wav"
+        audio = read_wav(str(sample))
+        result = pipeline.process(audio, audio_seconds=len(audio) / 16000)
+        print(json.dumps({"ok": True, "text": result.text or "（未识别到文字）"},
+                         ensure_ascii=False))
+        return 0
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                         ensure_ascii=False))
+        return 1
 
 
 def run_key_diagnosis(settings: Settings) -> int:
@@ -355,10 +387,13 @@ def self_check(settings: Settings) -> int:
     )
     for label, key in (("听写快捷键", "hotkey_dictate"), ("编辑快捷键", "hotkey_ask")):
         combo = settings.get(key)
-        if carbon_combo(combo):
+        if IS_WIN:
+            mapping = "系统级键盘监听（免授权）"
+        elif carbon_combo(combo):
             mapping = "可注册（免授权）"
         elif is_single_modifier(combo) or is_single_plain_key(combo):
-            mapping = "单键热键（系统事件监听，需输入监控授权）"
+            mapping = ("单键热键（Windows 默认能力，无需额外授权）" if IS_WIN
+                       else "单键热键（系统事件监听，需输入监控授权）")
         elif not valid_hotkey(combo):
             mapping = "无效组合，需要重新设置"
         else:
@@ -366,20 +401,32 @@ def self_check(settings: Settings) -> int:
         print(f"{label}：{combo} · 系统热键映射：{mapping}")
     tap_ok, tap_detail = event_tap_available()
     print("全局键盘监听（单键热键/回退后端使用）：", "可用" if tap_ok else "不可用", "-", tap_detail)
-    print("说明：组合键（如 ⌘+Shift+空格）由 Carbon 注册、免授权，可靠且覆盖安装后不失效。"
-          "单个按键（如 option/fn）需输入监控授权，但 macOS 系统限制修饰键不产生 "
-          "keyDown/keyUp 事件，单键修饰键可能不可靠；组合键最稳定。")
+    if IS_WIN:
+        print("说明：Windows 下全局热键由系统级键盘监听实现，无需额外授权、覆盖安装后不失效。"
+              "麦克风需在「设置 → 隐私和安全性 → 麦克风」里允许桌面应用访问；"
+              "文字注入为系统默认能力，无额外授权项。")
+    else:
+        print("说明：组合键（如 ⌘+Shift+空格）由 Carbon 注册、免授权，可靠且覆盖安装后不失效。"
+              "单个按键（如 option/fn）需输入监控授权，但 macOS 系统限制修饰键不产生 "
+              "keyDown/keyUp 事件，单键修饰键可能不可靠；组合键最稳定。")
     try:
         from pynput.keyboard import Listener  # noqa: F401
         print("键盘监听模块 pynput：随包可用")
     except Exception as exc:
         print("键盘监听模块 pynput：不可用 -", exc)
-    for mod in ("ApplicationServices", "AVFoundation", "AppKit"):
+    system_modules = ("ApplicationServices", "AVFoundation", "AppKit") if sys.platform == "darwin" else ()
+    for mod in system_modules:
         try:
             __import__(mod)
             print(f"本机系统模块 {mod}：随包可用")
         except Exception as exc:
             print(f"本机系统模块 {mod}：不可用 - {exc}")
+    if sys.platform == "win32":
+        try:
+            import winreg  # noqa: F401
+            print("Windows 系统模块 winreg：随包可用")
+        except Exception as exc:
+            print("Windows 系统模块 winreg：不可用 -", exc)
     hits = audit_source(str(Path(__file__).resolve().parent))
     print("源码联网关键字扫描：", "通过（0 处）" if not hits else f"发现 {len(hits)} 处")
     for h in hits:
@@ -605,25 +652,35 @@ class Controller:
         """麦克风打不开时区分根因：权限未授权就主动弹授权框 + 打开设置，别只报错。"""
         log_note(f"麦克风打开失败：{msg}")
         try:
-            from .platform import permissions
-            mic_ok = permissions._mac_microphone()  # True / False / None
+            # 平台通用：macOS 查 TCC，Windows 查注册表 ConsentStore
+            mic_ok = (permissions._win_microphone() if IS_WIN
+                      else permissions._mac_microphone())  # True / False / None
         except Exception:
             mic_ok = None
-        if mic_ok is False:  # 明确未授权：覆盖安装后签名变更最常见的后果
-            try:
-                permissions._prompt_microphone()
-                permissions.open_settings("microphone")
-            except Exception:
-                pass
-            self.session.sig_error.emit(
-                "麦克风权限未授权：已为您弹出系统授权框并打开「隐私与安全性 → 麦克风」。"
-                "请勾选「轻述 sayo」的开关（若列表里有多个同名条目，先把旧的删掉），"
-                "然后回到输入框重新按 ⌘ + Shift + 空格 听写。")
+        if mic_ok is False:  # 明确未授权
+            ok, note = permissions.open_settings_result("microphone")
+            if not IS_WIN:  # Windows 无法由应用主动弹授权框，只打开设置页
+                try:
+                    permissions._prompt_microphone()
+                except Exception:
+                    pass
+            if IS_WIN:
+                tip = (
+                    "麦克风访问已被系统拒绝。" + note
+                    + f" 开启后回到输入框重新按 {default_hotkey_hint()} 听写。")
+            else:
+                tip = (
+                    "麦克风权限未授权：已为您弹出系统授权框并打开「隐私与安全性 → 麦克风」。"
+                    "请勾选「轻述 sayo」的开关（若列表里有多个同名条目，先把旧的删掉），"
+                    f"然后回到输入框重新按 {default_hotkey_hint()} 听写。")
+            self.session.sig_error.emit(tip)
             return
         # 其他原因：设备被占用 / 蓝牙断开 / 无输入设备
         self.session.sig_error.emit(
             f"麦克风打开失败：{msg}\n"
-            "若刚更换过蓝牙耳机或系统默认输入设备，请到 系统设置 → 声音 → 输入 确认后重试。")
+            + ("若刚更换过麦克风或系统默认输入设备，请到系统声音设置 → 输入 确认后重试。"
+               if IS_WIN else
+               "若刚更换过蓝牙耳机或系统默认输入设备，请到 系统设置 → 声音 → 输入 确认后重试。"))
 
     def begin(self, mode: str | None = None):
         if self.state != "idle":
@@ -750,7 +807,8 @@ class Controller:
             )
             if action == "clipboard" and smart and \
                     permissions.accessibility_granted() is False:
-                # 根因提示：辅助功能未授权时 macOS 只允许写剪贴板（焦点检测与 ⌘V 注入都依赖它）
+                # 根因提示：macOS 辅助功能未授权时只允许写剪贴板
+                # （焦点检测与粘贴注入都依赖它；Windows 该值恒为 True 不会走到这里）
                 status = "辅助功能未授权 · 已复制到剪贴板（菜单栏「授权引导」一键修复）"
                 if not self._ax_nudged:
                     self._ax_nudged = True
@@ -825,7 +883,10 @@ def run_gui(settings: Settings) -> int:
     from .ui.settings_window import SettingsWindow
     from .ui.summary_window import SummaryWindow
     from .ui.themes import DEFAULT_THEME, get_theme, ui_stylesheet
-    from .core.sound import set_enabled as set_sound_enabled, play_start, play_end
+    from .core.sound import (
+        set_enabled as set_sound_enabled, play_start, play_end,
+        prewarm as sound_prewarm, shutdown as sound_shutdown,
+    )
     from .core.mute import set_muted as mute_system_output
 
     app = QApplication.instance() or QApplication(sys.argv)
@@ -886,8 +947,36 @@ def run_gui(settings: Settings) -> int:
     overlay.confirm_requested.connect(ctrl.confirm)
     # 初始化交互声音开关（来自「设置 → 常规 → 交互声音」）
     set_sound_enabled(bool(settings.get("interaction_sound", True)))
+    sound_prewarm()  # 兼容接口：提示音改为按需排队播放，不再预占音频设备
     settings_win = SettingsWindow(settings, ctrl.storage, ctrl.pipeline)
     history_win = HistoryWindow(ctrl.storage, ctrl.pipeline)
+
+    def _use_downloaded_models() -> None:
+        """模型就绪后立刻切换引擎目录并预热，无需重启应用、无需等待。"""
+        target = user_models_dir()
+        engines = [ctrl.asr, getattr(getattr(ctrl, "live", None), "asr", None)]
+        for engine in engines:
+            if engine is None:
+                continue
+            engine.models_dir = target
+            engine._recognizer = None
+            engine._vad = None
+            engine._load_key = None
+
+        def _warm_live() -> None:
+            try:
+                ctrl.live.asr.warmup()
+            except Exception as exc:
+                log_note(f"实时预览预热失败：{type(exc).__name__}: {exc}")
+
+        try:
+            ctrl.executor.submit(ctrl.asr.warmup)
+        except Exception:
+            pass
+        # 实时预览单独一个线程预热，不占用识别线程，保证下一次按键就能立刻出字
+        threading.Thread(target=_warm_live, daemon=True, name="live-warmup").start()
+
+    settings_win.models_ready.connect(_use_downloaded_models)
 
     def latest_text() -> str:
         """总结的默认源文本：最近一次听写的整理结果；没有则取本机历史最近一条。"""
@@ -902,15 +991,41 @@ def run_gui(settings: Settings) -> int:
     summary_win = SummaryWindow(generate_summary, ctrl.executor)
 
     def quick_probe() -> str:
-        """免麦克风试识别：用安装包内置的语音样本跑一遍完整离线流程。"""
-        sample = resource_root() / "assets" / "sample_zh.wav"
-        audio = read_wav(str(sample))
-        r = ctrl.pipeline.process(audio, audio_seconds=len(audio) / 16000)
-        return r.text or "（未识别到文字）"
+        """免麦克风试识别：用独立子进程跑，首次加载模型再慢也不会卡住界面。"""
+        import json
+        import subprocess
+
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--probe-json"]
+        else:
+            cmd = [sys.executable, "-m", "app.main", "--probe-json"]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=240,
+                cwd=str(resource_root()),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except subprocess.TimeoutExpired:
+            return "测试超时：模型首次加载较慢，请稍等片刻再试一次。"
+        lines = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
+        if not lines:
+            return "测试失败：识别进程没有返回结果。"
+        try:
+            data = json.loads(lines[-1])
+        except Exception:
+            return "测试失败：" + lines[-1][:200]
+        if data.get("ok"):
+            return str(data.get("text") or "（未识别到文字）")
+        return "测试失败：" + str(data.get("error") or "未知错误")
 
     quickstart = QuickStartWindow(settings, probe=quick_probe)
     guide_win = PermissionGuideWindow(settings)
-    guide_win.open_settings_requested.connect(lambda key: permissions.open_settings(key))
+    def _open_permission_settings_from_guide(key: str) -> None:
+        ok, note = permissions.open_settings_result(key)
+        guide_win.lb_state.setText(note)
+        if not ok:
+            tray.showMessage(APP_NAME, note, QSystemTrayIcon.Warning, 8000)
+
+    guide_win.open_settings_requested.connect(_open_permission_settings_from_guide)
 
     def apply_app_theme():
         """把当前主题套到所有应用窗口（浮层由 overlay.apply_theme 单独处理）。"""
@@ -931,25 +1046,37 @@ def run_gui(settings: Settings) -> int:
         info = hotkey_diagnostics(ctrl, "用户打开快捷键诊断")
         healthy = info["healthy"]
         carbon = info.get("backend") == "carbon"
+        # 从当前配置动态生成快捷键文案，避免把某一平台的写法硬编码进界面
+        key_dictate = combo_text(settings.get("hotkey_dictate", default_hotkey_hint()))
+        key_ask = combo_text(settings.get("hotkey_ask", ""))
         if healthy and carbon:
-            summary = (
-                "系统级全局热键已生效，不需要「输入监控」授权，覆盖安装后也不会失效。\n\n"
-                "⌘ + Shift + 空格（键盘最下方那个空格键）：开始 / 结束听写\n"
-                "⌘ + Shift + E：语音编辑选中文字\n\n"
-                "也可以在「设置 → 常规」改成其他组合键（免授权）或单个按键"
-                "（需输入监控授权，如 option/fn）。\n"
-                "听写期间屏幕顶部会一直显示两样彼此独立的东西："
-                "上面一行实时文字，下面几条随音量变化的曲线；切换应用或桌面也不会消失。")
+            if IS_WIN:
+                summary = (
+                    "系统级全局热键已生效，覆盖安装后也不会失效。\n\n"
+                    f"{key_dictate}：开始 / 结束听写\n"
+                    + (f"{key_ask}：语音编辑选中文字\n\n" if key_ask else "\n")
+                    + "也可以在「设置 → 常规」改成其他组合键。"
+                    "听写期间屏幕顶部会显示胶囊浮层：实时文字与音量波形；"
+                    "切换应用或桌面也不会消失。")
+            else:
+                # macOS 保留原始说明（含「不需要输入监控授权」「option/fn」等字样）
+                summary = (
+                    "系统级全局热键已生效，不需要「输入监控」授权，覆盖安装后也不会失效。\n\n"
+                    f"{key_dictate}（键盘最下方那个空格键）：开始 / 结束听写\n"
+                    + (f"{key_ask}：语音编辑选中文字\n\n" if key_ask else "\n")
+                    + "也可以在「设置 → 常规」改成其他组合键（免授权）或单个按键"
+                    "（需输入监控授权，如 option/fn）。\n"
+                    "听写期间屏幕顶部会一直显示两样彼此独立的东西："
+                    "上面一行实时文字，下面几条随音量变化的曲线；切换应用或桌面也不会消失。")
         elif healthy:
-            summary = ("快捷键可用（回退到键盘监听后端）。\n\n"
-                       "⌘ + Shift + 空格 开始 / 结束听写，再按一次结束。")
+            summary = (f"快捷键可用。\n\n{key_dictate} 开始 / 结束听写，再按一次结束。")
         else:
             summary = (
                 "系统热键未能注册，所以按了没有反应。\n\n"
                 f"原因：{info.get('carbon_error') or info.get('tap_detail')}\n\n"
-                "常见情况是组合键被别的应用占用；可以在「设置 → 常规」换成别的组合，\n"
-                "或点「重新注册系统热键」重试。若回退到键盘监听，"
-                "则还需要在「输入监控」里勾选本应用。")
+                "常见情况是组合键被别的应用占用；可以在「设置 → 常规」换成别的组合，"
+                "或点「重新注册系统热键」重试。"
+                + ("" if IS_WIN else "若回退到键盘监听，还需在「输入监控」里勾选本应用。"))
         activate_for_dialog()  # 用户主动打开：让诊断窗口正常置于前台
         box = QMessageBox()
         box.setWindowTitle("快捷键诊断 / 本机授权")
@@ -958,25 +1085,29 @@ def run_gui(settings: Settings) -> int:
         box.setDetailedText("\n".join(info["lines"]) +
                            (f"\n日志：{info['log_path']}" if info["log_path"] else ""))
         b_fix = box.addButton("重新注册系统热键", QMessageBox.ActionRole)
-        b_set = box.addButton("输入监控设置（仅回退后端）", QMessageBox.ActionRole)
+        # Windows 无「输入监控 / 辅助功能」概念，不显示这两个无效按钮
+        b_set = b_ax = None
+        if not IS_WIN:
+            b_set = box.addButton("输入监控设置（仅回退后端）", QMessageBox.ActionRole)
         b_mic = box.addButton("麦克风设置", QMessageBox.ActionRole)
-        b_ax = box.addButton("辅助功能设置", QMessageBox.ActionRole)
+        if not IS_WIN:
+            b_ax = box.addButton("辅助功能设置", QMessageBox.ActionRole)
         b_close = box.addButton("关闭", QMessageBox.RejectRole)
         box.setDefaultButton(b_fix if not healthy else b_close)
         box.exec()
         clicked = box.clickedButton()
         if clicked is b_mic:
             permissions.open_settings("microphone")
-        elif clicked is b_ax:
+        elif b_ax is not None and clicked is b_ax:
             permissions.open_settings("accessibility")
         elif clicked is b_fix:
             after = rebuild_hotkeys("诊断窗口点击重新启用")
             tray.showMessage(APP_NAME,
-                             "系统热键已重新注册，现在可以按 ⌘ + Shift + 空格" if after["healthy"]
-                             else "系统热键仍未注册，请更换组合键或在输入监控里授权回退监听",
+                             f"系统热键已重新注册，现在可以按 {key_dictate}" if after["healthy"]
+                             else "系统热键仍未注册，请到「设置 → 常规」更换组合键后重试",
                              QSystemTrayIcon.Information if after["healthy"] else QSystemTrayIcon.Warning,
                              6000)
-        elif clicked is b_set:
+        elif b_set is not None and clicked is b_set:
             permissions.open_settings("input_monitoring")
 
     prev_sig = [asr_signature(settings.data)]
@@ -992,6 +1123,7 @@ def run_gui(settings: Settings) -> int:
         overlay.apply_theme(settings.get("theme", DEFAULT_THEME))
         overlay.apply_style(settings.get("overlay_style", "classic"))
         set_sound_enabled(bool(settings.get("interaction_sound", True)))
+        sound_prewarm()  # 兼容接口：无需预热，下一次提示音直接排队播放
         rebuild_hotkeys("设置保存后重建系统热键")
         new_sig = asr_signature(settings.data)
         if new_sig == prev_sig[0]:
@@ -1068,6 +1200,7 @@ def run_gui(settings: Settings) -> int:
             ctrl.restart_recording()
         elif cmd == "quit":
             mute_system_output(False)  # 兜底：退出时若仍处于静音会话则恢复用户音量
+            sound_shutdown()           # 允许已排队的提示音播完，不强占设备
             ctrl.shutdown()
             app.quit()
 
@@ -1196,18 +1329,70 @@ def run_gui(settings: Settings) -> int:
     tray.show()
 
     # ------------------------------------------------------------ 启动检查
-    ok, msg = ctrl.asr.check_models()
-    if not ok:
-        tray.showMessage(
-            APP_NAME,
-            "模型未安装：" + msg + "\n首次使用请运行 scripts/install_models.command 下载（仅这一步需联网）",
-            QSystemTrayIcon.Critical, 10000)
-    else:
+    # 模型准备完全自动化：装好第一次启动就在后台静默下载（失败重试 2 次，
+    # 仍失败则下次启动继续），成功后写入状态文件，以后只做毫秒级比对。
+    # 用户不需要点任何按钮，也不需要看安装说明。
+    class _ModelBridge(QObject):
+        done = Signal(bool, str)
+        repair = Signal()
+
+    model_bridge = _ModelBridge()
+    bootstrap_holder: dict[str, ModelBootstrap] = {}
+    _heal_lock = threading.Lock()
+
+    def _start_model_bootstrap(announce: bool = True) -> None:
+        """启动后台模型准备线程（重复调用安全）。"""
+        current = bootstrap_holder.get("bootstrap")
+        if current is not None and current.is_running():
+            return
+        bootstrap = ModelBootstrap(
+            user_models_dir(),
+            on_done=lambda ok, msg: model_bridge.done.emit(ok, msg))
+        bootstrap_holder["bootstrap"] = bootstrap
+        if not bootstrap.start():
+            return
+        missing_count = len(model_download.light_missing(user_models_dir()))
+        log_note("启动自检：语音模型缺失 %d 个文件，已开始后台下载" % missing_count,
+                 "model.log")
+        if announce:
+            tray.showMessage(
+                APP_NAME,
+                "首次使用需要准备语音模型（约 240 MB），已在后台自动下载；"
+                "完成后会提示你，期间其它功能照常可用。",
+                QSystemTrayIcon.Information, 8000)
+
+    def _schedule_model_self_heal() -> None:
+        """预热失败时自检模型：文件真的坏了就删掉重新下载，用户什么都不用做。"""
+        def work():
+            if not _heal_lock.acquire(blocking=False):
+                return
+            try:
+                bad = model_download.verify_cached(user_models_dir(), force=True)
+                if not bad:
+                    return
+                removed: list[str] = []
+                for item in bad:
+                    try:
+                        (user_models_dir() / item.relative).unlink(missing_ok=True)
+                        removed.append(item.relative)
+                    except Exception:
+                        pass
+                log_note("自检发现模型文件损坏，已删除并准备重新下载：" + ", ".join(removed),
+                         "model.log")
+                model_bridge.repair.emit()
+            except Exception as exc:
+                log_note(f"模型自愈失败：{type(exc).__name__}: {exc}", "model.log")
+            finally:
+                _heal_lock.release()
+        threading.Thread(target=work, daemon=True, name="model-heal").start()
+
+    def _warmup_engines() -> None:
         def _warmup_all():
             try:
                 ctrl.asr.warmup()
             except Exception as exc:
-                log_note(f"主引擎预热失败：{type(exc).__name__}: {exc}")
+                log_note(f"主引擎预热失败：{type(exc).__name__}: {exc}", "model.log")
+                _schedule_model_self_heal()
             # 实时预览也必须预热：旧实现第一次说话时才加载 int8 模型（约 0.5 s），
             # 叠加 0.35 s 最小语音长度，首字出现太晚，看起来像「不显示识别的文字」。
             try:
@@ -1216,6 +1401,35 @@ def run_gui(settings: Settings) -> int:
                 log_note(f"实时预览预热失败：{type(exc).__name__}: {exc}")
             return None
         ctrl.executor.submit(_warmup_all)
+
+    def _on_models_ready(ok: bool, message: str) -> None:
+        if not ok:
+            # 失败不打扰用户：只写本机日志，下次启动自动再试
+            log_note(f"语音模型后台准备未完成：{message}", "model.log")
+            return
+        log_note(f"语音模型后台准备完成：{message}", "model.log")
+        _use_downloaded_models()
+        try:
+            settings_win.refresh_model_state()
+        except Exception:
+            pass
+        tray.showMessage(APP_NAME, "语音模型已就绪，现在可以直接听写了",
+                         QSystemTrayIcon.Information, 5000)
+
+    model_bridge.done.connect(_on_models_ready)
+    model_bridge.repair.connect(lambda: _start_model_bootstrap(True))
+
+    missing_models = model_download.light_missing(user_models_dir())
+    if missing_models:
+        _start_model_bootstrap(True)
+    else:
+        _warmup_engines()
+        ok, msg = ctrl.asr.check_models()
+        if not ok:
+            tray.showMessage(
+                APP_NAME,
+                "语音模型未就绪：" + msg + "\n请在「设置 → 识别」中检查。",
+                QSystemTrayIcon.Warning, 9000)
     hotkey_warning = ctrl.setup_hotkeys()
     hotkey_diagnostics(ctrl, "应用启动")
     if hotkey_warning:
@@ -1225,13 +1439,28 @@ def run_gui(settings: Settings) -> int:
         # 只做本机状态复查并写日志。绝不自动打开系统设置、绝不弹模态窗口：
         # 那会把用户正在使用的输入框光标抢走（旧版「开始使用后光标就没了」的根因）。
         hotkey_diagnostics(ctrl, "启动后自检（无弹窗）")
+        # 每次启动都做一次模型自检：只比对大小 + 指纹，正常情况不读 240 MB 文件。
+        missing_now = model_download.light_missing(user_models_dir())
+        log_note(
+            "启动自检：模型%s（缺失 %d 项）；引擎=%s" % (
+                "完整" if not missing_now else "不完整", len(missing_now),
+                getattr(ctrl.asr, "status", lambda: "?")()),
+            "model.log")
         perms = {st.key: st.granted for st in permissions.check()}
-        if perms.get("accessibility") is not True:
+        # Windows 无「辅助功能」概念，绝不能因此弹出一个满是 macOS 文案的窗口。
+        # 只有 macOS 才做辅助功能引导；Windows 仅在麦克风被显式拒绝时提醒。
+        if need_accessibility_prompt() and perms.get("accessibility") is not True:
             tray.showMessage(
                 APP_NAME,
-                "辅助功能未授权：文字只放入剪贴板（⌘V 粘贴）。"
+                f"辅助功能未授权：文字只放入剪贴板（{paste_text()} 粘贴）。"
                 "已弹出「授权引导」窗口，按步骤勾选即可自动输入",
                 QSystemTrayIcon.Information, 7000)
+            guide_win.maybe_auto_show()
+        elif IS_WIN and perms.get("microphone") is False:
+            tray.showMessage(
+                APP_NAME,
+                "麦克风访问已被系统拒绝：请在 Windows 设置 → 隐私和安全性 → 麦克风 中开启。",
+                QSystemTrayIcon.Warning, 7000)
             guide_win.maybe_auto_show()
 
     # 组合键由 Carbon 注册，免授权。单键（如 option/fn）走 CGEventTap，
@@ -1249,8 +1478,16 @@ def run_gui(settings: Settings) -> int:
         QTimer.singleShot(900, lambda: (activate_for_dialog(),
                                         quickstart.show(), quickstart.raise_()))
 
-    tray.showMessage(APP_NAME, "已就绪 · ⌘ + Shift + 空格 开始听写 · 完全离线",
-                     QSystemTrayIcon.Information, 4000)
+    if missing_models:
+        # 模型还在后台下载：这时再说「已就绪 · 完全离线」会和上一条通知自相矛盾
+        tray.showMessage(
+            APP_NAME,
+            f"正在准备语音模型（首次约 240 MB，后台下载中）· 就绪后按 {default_hotkey_hint()} 即可听写",
+            QSystemTrayIcon.Information, 6000)
+    else:
+        tray.showMessage(APP_NAME,
+                         f"已就绪 · {default_hotkey_hint()} 开始听写 · 完全离线",
+                         QSystemTrayIcon.Information, 4000)
     return app.exec()
 
 
@@ -1259,6 +1496,8 @@ def main(argv=None) -> int:
     parser.add_argument("--cli", action="store_true", help="命令行模式")
     parser.add_argument("--file", help="离线转写本机 16k wav 文件")
     parser.add_argument("--self-check", action="store_true", help="环境与离线约束自检")
+    parser.add_argument("--probe-json", action="store_true",
+                        help="内置样本试识别（JSON 输出，供界面子进程调用）")
     parser.add_argument("--benchmark", action="store_true", help="CPU/GPU × fp32/int8 本机实测")
     parser.add_argument("--bench-file", help="基准测试使用的本机 wav")
     parser.add_argument("--diagnose-keys", action="store_true",
@@ -1269,6 +1508,8 @@ def main(argv=None) -> int:
         return run_key_diagnosis(settings)
     if args.self_check:
         return self_check(settings)
+    if args.probe_json:
+        return run_probe_json(settings)
     if args.benchmark:
         return run_benchmark(settings, args.bench_file)
     if args.cli or args.file:
@@ -1280,12 +1521,16 @@ def main(argv=None) -> int:
         log_note("拒绝重复启动：已有 GUI 实例持有单实例锁", "instance.log")
         from PySide6.QtWidgets import QApplication, QMessageBox
         qapp = QApplication.instance() or QApplication(sys.argv)
+        _install_hint = ("请只使用 /Applications 中的正式版；若刚覆盖安装过，"
+                         "请先从菜单栏退出旧实例再启动。"
+                         if sys.platform == "darwin" else
+                         "请在托盘图标右键菜单选择「退出」，结束已在运行的实例后再启动。\n"
+                         "若刚覆盖安装过，旧进程可能仍在后台运行。")
         QMessageBox.warning(
             None, f"{APP_NAME} 已在运行",
             "检测到轻述 sayo 已经在运行，本次启动已取消。\n\n"
-            "请只使用 /Applications 中的正式版；若刚覆盖安装过，"
-            "请先从菜单栏退出旧实例再启动。\n"
-            "（dist/ 目录下的构建副本请勿直接打开）")
+            + _install_hint
+            + "\n（dist/ 目录下的构建副本请勿直接打开）")
         return 0
     return run_gui(settings)
 
