@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 在【构建机】上生成 macOS 安装包（DMG + PKG）。
-# 产物：dist/sayo-1.0.0-macos.dmg、dist/sayo-1.0.0-macos.pkg
+# 产物：dist/sayo-<APP_VERSION>-macos.dmg、dist/sayo-<APP_VERSION>-macos.pkg
 # 模型不随包：推理库、PortAudio、Qt 在 .app 内；模型由用户首次使用时
 # 执行 scripts/install_models.command 下载到用户数据目录。
 set -euo pipefail
@@ -8,7 +8,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 VENV="${VENV:-$ROOT/.venv}"
 APP="$ROOT/dist/轻述 sayo.app"
-VERSION="1.0.0"
+# 版本号唯一来源：app/config.py 的 APP_VERSION（取不到时兜底 1.0.1）
+VERSION="$(sed -n 's/^APP_VERSION = "\(.*\)"$/\1/p' app/config.py | head -1)"
+VERSION="${VERSION:-1.0.1}"
 BUILD_ID="$(date +%Y%m%d-%H%M%S)"
 
 echo "=== 1/6 依赖（仅在构建机） ==="

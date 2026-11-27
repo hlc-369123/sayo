@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller 打包规格：onedir。语音模型不随包，首次使用时联网下载一次。"""
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -10,6 +11,10 @@ ROOT = Path(os.path.abspath(SPECPATH)).parent
 IS_MAC = sys.platform == "darwin"
 IS_WIN = sys.platform == "win32"
 DEBUG_CONSOLE = os.environ.get("SAYO_DEBUG_CONSOLE", "0") == "1"
+
+# 版本号唯一来源：app/config.py 的 APP_VERSION（取不到时兜底 1.0.1）
+_m = re.search(r'^APP_VERSION = "(.*)"$', (ROOT / "app" / "config.py").read_text(encoding="utf-8"), re.M)
+APP_VERSION = _m.group(1) if _m else "1.0.1"
 
 ICON = ROOT / "assets" / ("icon.icns" if IS_MAC else "icon.ico" if IS_WIN else "icon.png")
 if not ICON.exists():
@@ -105,8 +110,8 @@ if IS_MAC:
         info_plist={
             "CFBundleName": "轻述 sayo",
             "CFBundleDisplayName": "轻述 sayo",
-            "CFBundleShortVersionString": "1.0.0",
-            "CFBundleVersion": "1.0.0",
+            "CFBundleShortVersionString": APP_VERSION,
+            "CFBundleVersion": APP_VERSION,
             "LSMinimumSystemVersion": "11.0",
             # 菜单栏常驻：永不成为前台 App，避免显示浮层时抢走输入框光标
             "LSUIElement": True,

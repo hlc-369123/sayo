@@ -12,7 +12,7 @@ from pathlib import Path
 
 APP_NAME = "轻述 sayo"
 APP_ID = "sayo"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 SAMPLE_RATE = 16000  # SenseVoice / Silero VAD 均要求 16 kHz 单声道
 CHANNELS = 1
 
