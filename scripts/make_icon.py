@@ -56,6 +56,25 @@ def make_full_bleed(img) -> "Image.Image":
     return base
 
 
+def make_rounded(out_img) -> Path:
+    """生成 README 用的圆角透明图标：与桌面图标同源，圆角由系统 squircle 比例模拟。"""
+    from PIL import Image, ImageDraw
+
+    w, h = out_img.size
+    # macOS app icon 圆角比例约 22.4%；4× 超采样让边缘平滑
+    ss = 4
+    radius = int(round(w * 0.2237))
+    mask = Image.new("L", (w * ss, h * ss), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, w * ss - 1, h * ss - 1), radius=radius * ss, fill=255)
+    mask = mask.resize((w, h), Image.LANCZOS)
+    rounded = out_img.convert("RGBA")
+    rounded.putalpha(mask)
+    out = ASSETS / "icon-rounded.png"
+    rounded.save(str(out))
+    return out
+
+
 def make_png_ico() -> Path:
     from PIL import Image
 
@@ -67,6 +86,7 @@ def make_png_ico() -> Path:
     out_img.save(str(out))
     out_img.save(str(ASSETS / "icon.ico"),
                  sizes=[(16, 16), (32, 32), (64, 64), (128, 128), (256, 256)])
+    make_rounded(out_img)
     return out
 
 

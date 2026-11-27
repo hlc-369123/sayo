@@ -1,7 +1,7 @@
 # 轻述 sayo · 本地离线语音输入工具
 
 <p align="center">
-  <img src="assets/icon.png" alt="轻述 sayo" width="180">
+  <img src="assets/icon-rounded.png" alt="轻述 sayo" width="180">
 </p>
 
 <p align="center">
