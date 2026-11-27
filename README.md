@@ -123,16 +123,21 @@ Python 解释器、推理库、Qt 都随 `.app` / EXE 打包。
 
 ### A. 拿到「安装包」（最省事，推荐普通用户）
 
-正式版 `v1.0.0` 提供两种 macOS 安装包，**直接用，不需要开发环境**：
+安装包按平台分开，**只下载自己系统对应的那一个**；不需要开发环境。
 
-- **[DMG](https://github.com/hlc-369123/sayo/releases/download/v1.0.0/sayo-1.0.0-macos.dmg)**（约 74.5 MB）：双击挂载 → 拖进「应用程序」。[校验文件](https://github.com/hlc-369123/sayo/releases/download/v1.0.0/sayo-1.0.0-macos.dmg.sha256)
-- **[PKG](https://github.com/hlc-369123/sayo/releases/download/v1.0.0/sayo-1.0.0-macos.pkg)**（约 65 MB）：双击按向导安装到 `/Applications`。[校验文件](https://github.com/hlc-369123/sayo/releases/download/v1.0.0/sayo-1.0.0-macos.pkg.sha256)
+#### macOS — 最新版 `v1.0.1`
 
-Windows / Linux 目前请从源码构建，见「[二次开发与构建](#二次开发与构建简述)」。
+- **[DMG](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/sayo-1.0.1-macos.dmg)**（约 70 MB）：双击挂载 → 拖进「应用程序」。[校验文件](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/sayo-1.0.1-macos.dmg.sha256)
+- **[PKG](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/sayo-1.0.1-macos.pkg)**（约 62 MB）：双击按向导安装到 `/Applications`。[校验文件](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/sayo-1.0.1-macos.pkg.sha256)
 
-> **GitHub 仓库只存源码**：`.app`、DMG、PKG 等二进制产物在 `.gitignore` 中被忽略，不进仓库。
-> 官方安装包统一发布在 **[Releases v1.0.0](https://github.com/hlc-369123/sayo/releases/tag/v1.0.0)**。
-> 安装包**不含模型**；下载后可用 `shasum -a 256 -c <文件名>.sha256` 校验。
+#### Windows — 当前 `v1.0.0`
+
+- **[Windows setup.exe](https://github.com/hlc-369123/sayo/releases/download/v1.0.0/sayo-1.0.0-windows-setup.exe)**（约 47 MB）：双击按向导安装。[校验文件](https://github.com/hlc-369123/sayo/releases/download/v1.0.0/sayo-1.0.0-windows-setup.exe.sha256)
+- Windows 适配分支仍在验收中，本版暂不提供 v1.0.1；后续发布会在 Releases 同步更新。
+
+> **GitHub 仓库只存源码**：二进制产物在 `.gitignore` 中被忽略，不进仓库。
+> 官方安装包统一发布在 **[Releases](https://github.com/hlc-369123/sayo/releases)**（macOS 取 v1.0.1，Windows 取 v1.0.0）。
+> 安装包**不含模型**；下载后可用对应 `.sha256` 校验（macOS：`shasum -a 256 -c <文件名>.sha256`）。
 > 模型用仓库里的 `scripts/install_models.command` 下载一次，见下面「第 0 步」。
 
 - **macOS**
@@ -141,11 +146,12 @@ Windows / Linux 目前请从源码构建，见「[二次开发与构建](#二次
   - 未公证的版本（ad-hoc 签名）首次启动若被拦截：右键 → 打开，或
     系统设置 → 隐私与安全性 → 仍要打开。
   - 气密 / 断网环境：用仓库里的 `scripts/install_offline_macos.sh` 从 U 盘直接装（去 quarantine + 自动清理旧授权记录）。
-- **Windows / Linux**：当前未提供正式安装包，请按 [`docs/开发指南.md`](docs/开发指南.md) 从源码构建。
+- **Windows**：双击 v1.0.0 的 `setup.exe` 按向导安装。
+- **Linux**：当前未提供正式安装包，请按 [`docs/开发指南.md`](docs/开发指南.md) 从源码构建。
 
 #### 第 0 步：下载语音模型（仅第一次，需联网）
 
-运行仓库里的 `scripts/install_models.command`（也可从 [Releases 单独下载](https://github.com/hlc-369123/sayo/releases/download/v1.0.0/install_models.command)），
+运行仓库里的 `scripts/install_models.command`（也可从 [Releases 单独下载](https://github.com/hlc-369123/sayo/releases/download/v1.0.1/install_models.command)），
 它会把 int8 模型、词表、VAD 下载到 `~/Library/Application Support/sayo/models/` 并逐个校验 SHA-256，
 约 240 MB。想要 fp32 全精度：`./install_models.command --full`（再下约 940 MB）。
 
